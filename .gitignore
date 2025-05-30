@@ -38,17 +38,20 @@ logs/
 temp/
 
 # Model files and large data
-models/*.safetensors
-models/*.pt
-models/*.bin
-models/*.ckpt
-models/*.pth
-models/*.onnx
-models/*.wav
-models/*.mp3
+models/
+models/**/*
+*.safetensors
+*.pt
+*.bin
+*.ckpt
+*.pth
+*.onnx
+*.wav
+*.mp3
 
 # Output files
 outputs/
+outputs/**/*
 *.wav
 *.mp3
 
