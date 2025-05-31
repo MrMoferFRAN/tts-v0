@@ -92,14 +92,14 @@ output = cloner.generate_speech(
 ### Método 1: Usar el ejemplo incluido
 
 ```bash
-cd /workspace/runPodtts
+cd /workspace/runttspod
 python voice_cloning/example_usage.py
 ```
 
 ### Método 2: Usar el generador compatible
 
 ```bash
-cd /workspace/runPodtts
+cd /workspace/runttspod
 python voice_cloning/generator.py
 ```
 

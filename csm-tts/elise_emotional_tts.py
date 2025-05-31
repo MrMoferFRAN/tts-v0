@@ -297,7 +297,7 @@ def main():
     
     print("\n🎉 ANÁLISIS COMPLETADO")
     print("=" * 60)
-    print("📁 Archivos generados en: /workspace/runPodtts/outputs/")
+    print("📁 Archivos generados en: /workspace/runttspod/outputs/")
     print("📋 Para usar el modelo:")
     print("   1. Revisa los casos de prueba generados")
     print("   2. Consulta la guía de voice cloning")

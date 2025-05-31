@@ -363,7 +363,7 @@ def main():
     
     print(f"\n🎉 INVESTIGACIÓN COMPLETADA")
     print("🔍 Revisa los archivos de audio generados en:")
-    print("   📁 /workspace/runPodtts/outputs/csm_investigation/")
+    print("   📁 /workspace/runttspod/outputs/csm_investigation/")
     print("💡 Los archivos test_*.wav te dirán qué método funciona")
     
     return True

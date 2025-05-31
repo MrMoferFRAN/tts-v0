@@ -232,7 +232,7 @@ def main():
         print("\n🎉 ¡ÉXITO!")
         print("✅ Modelo base CSM funcionando")
         print("✅ Audio generado correctamente")
-        print("📁 Archivos en: /workspace/runPodtts/outputs/")
+        print("📁 Archivos en: /workspace/runttspod/outputs/")
     else:
         print("\n❌ FALLÓ")
         print("❌ Modelo base tiene problemas")
