@@ -1,0 +1,93 @@
+{
+  "model_info": {
+    "name": "therealcyberlord/csm-1b-elise",
+    "base_model": "unsloth/csm-1b",
+    "type": "LoRA adapter",
+    "rank": 16,
+    "alpha": 16
+  },
+  "test_cases": [
+    {
+      "text": "Hello, I'm Elise. Nice to meet you!",
+      "description": "Saludo básico sin emociones",
+      "speaker": 0,
+      "emotions": []
+    },
+    {
+      "text": "That's so funny! <laughs> I can't believe you said that!",
+      "description": "Risa natural en medio de la frase",
+      "speaker": 0,
+      "emotions": [
+        "<laughs>"
+      ]
+    },
+    {
+      "text": "Oh my goodness! <giggles> You're such a silly person!",
+      "description": "Risita juguetona",
+      "speaker": 0,
+      "emotions": [
+        "<giggles>"
+      ]
+    },
+    {
+      "text": "I'm so tired today. <sighs> I need some rest.",
+      "description": "Suspiro de cansancio",
+      "speaker": 0,
+      "emotions": [
+        "<sighs>"
+      ]
+    },
+    {
+      "text": "<whispers> Can you keep this a secret? It's very important.",
+      "description": "Susurro confidencial",
+      "speaker": 0,
+      "emotions": [
+        "<whispers>"
+      ]
+    },
+    {
+      "text": "Oh wow! <gasps> That's amazing! <laughs> I'm so happy for you!",
+      "description": "Múltiples expresiones: sorpresa + alegría",
+      "speaker": 0,
+      "emotions": [
+        "<gasps>",
+        "<laughs>"
+      ]
+    },
+    {
+      "text": "So I was walking down the street <laughs> and then this dog just comes running at me! <gasps> I was so scared!",
+      "description": "Narrativa con múltiples emociones",
+      "speaker": 0,
+      "emotions": [
+        "<laughs>",
+        "<gasps>"
+      ]
+    }
+  ],
+  "emotional_expressions": {
+    "risas": [
+      "<laughs>",
+      "<giggles>",
+      "<chuckles>",
+      "<nervous laughter>"
+    ],
+    "respiración": [
+      "<sighs>",
+      "<exhales>",
+      "<breathes deeply>",
+      "<gasps>"
+    ],
+    "emociones": [
+      "<sadly>",
+      "<whispers>"
+    ],
+    "sonidos_físicos": [
+      "<sniffs>",
+      "<scoffs>",
+      "<smacks lips>"
+    ],
+    "pausas": [
+      "<long pause>"
+    ]
+  }
+}

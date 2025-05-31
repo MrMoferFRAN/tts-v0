@@ -1,0 +1,12 @@
+Caso de Prueba #2
+========================================
+
+Descripción: Risa natural en medio de la frase
+Speaker: 0 (Elise)
+Emociones: <laughs>
+
+Texto:
+That's so funny! <laughs> I can't believe you said that!
+
+Formato de chat:
+[0]That's so funny! <laughs> I can't believe you said that!

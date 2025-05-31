@@ -1,0 +1,12 @@
+{
+  "voices": {
+    "name": "voices",
+    "audio_path": "/workspace/runPodtts/voices/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo..mp3",
+    "transcription": "Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo.",
+    "language": "es",
+    "quality_score": 1.0,
+    "duration": 6.309637188208617,
+    "sample_rate": 44100,
+    "created_at": "2025-05-31T00:54:21.102387"
+  }
+}

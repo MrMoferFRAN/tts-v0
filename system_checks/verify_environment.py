@@ -113,6 +113,13 @@ def check_audio_capabilities():
     else:
         print("❌ FFmpeg no encontrado")
     
+    # Add SoX check
+    sox_version = run_command("sox --version | head -1")
+    if "SoX" in sox_version:
+        print(f"✅ SoX: {sox_version}")
+    else:
+        print("❌ SoX no encontrado")
+    
     # Verificar librosa
     try:
         import librosa

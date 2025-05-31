@@ -1,0 +1,12 @@
+Caso de Prueba #5
+========================================
+
+Descripción: Susurro confidencial
+Speaker: 0 (Elise)
+Emociones: <whispers>
+
+Texto:
+<whispers> Can you keep this a secret? It's very important.
+
+Formato de chat:
+[0]<whispers> Can you keep this a secret? It's very important.

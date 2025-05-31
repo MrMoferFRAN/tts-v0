@@ -1,0 +1,12 @@
+Caso de Prueba #7
+========================================
+
+Descripción: Narrativa con múltiples emociones
+Speaker: 0 (Elise)
+Emociones: <laughs>, <gasps>
+
+Texto:
+So I was walking down the street <laughs> and then this dog just comes running at me! <gasps> I was so scared!
+
+Formato de chat:
+[0]So I was walking down the street <laughs> and then this dog just comes running at me! <gasps> I was so scared!

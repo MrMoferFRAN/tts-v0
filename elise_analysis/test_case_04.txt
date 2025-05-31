@@ -1,0 +1,12 @@
+Caso de Prueba #4
+========================================
+
+Descripción: Suspiro de cansancio
+Speaker: 0 (Elise)
+Emociones: <sighs>
+
+Texto:
+I'm so tired today. <sighs> I need some rest.
+
+Formato de chat:
+[0]I'm so tired today. <sighs> I need some rest.

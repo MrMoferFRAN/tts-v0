@@ -1,0 +1,12 @@
+Caso de Prueba #1
+========================================
+
+Descripción: Saludo básico sin emociones
+Speaker: 0 (Elise)
+Emociones: Ninguna
+
+Texto:
+Hello, I'm Elise. Nice to meet you!
+
+Formato de chat:
+[0]Hello, I'm Elise. Nice to meet you!

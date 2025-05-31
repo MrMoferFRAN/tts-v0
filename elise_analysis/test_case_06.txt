@@ -1,0 +1,12 @@
+Caso de Prueba #6
+========================================
+
+Descripción: Múltiples expresiones: sorpresa + alegría
+Speaker: 0 (Elise)
+Emociones: <gasps>, <laughs>
+
+Texto:
+Oh wow! <gasps> That's amazing! <laughs> I'm so happy for you!
+
+Formato de chat:
+[0]Oh wow! <gasps> That's amazing! <laughs> I'm so happy for you!
