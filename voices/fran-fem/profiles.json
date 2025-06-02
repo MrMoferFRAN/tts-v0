@@ -3,7 +3,7 @@
   "profiles": [
     {
       "name": "voices",
-      "audio_path": "/workspace/runttspod/voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo..wav",
+      "audio_path": "/workspace/runttspod/voices/fran-fem/Ah, ¿en serio_ Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav",
       "transcription": "Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?",
       "language": "es",
       "quality_score": 1.0,
