@@ -18,22 +18,12 @@ echo "✅ GPU verification complete"
 
 # 2. Setup environment variables
 echo "🔑 2. Configurando variables de entorno..."
-
-# Debug: Verificar variables disponibles
-echo "🔍 VERIFICANDO VARIABLES DE ENTORNO:"
-echo "   RUNPOD_SECRET_HF_TOKEN: $([ -n "$RUNPOD_SECRET_HF_TOKEN" ] && echo "SET (${#RUNPOD_SECRET_HF_TOKEN} chars)" || echo "NOT SET")"
-echo "   HF_TOKEN: $([ -n "$HF_TOKEN" ] && echo "SET (${#HF_TOKEN} chars)" || echo "NOT SET")"
-
 # Manejar RunPod Secrets y variables de entorno
 if [ -n "$RUNPOD_SECRET_HF_TOKEN" ]; then
     export HF_TOKEN="$RUNPOD_SECRET_HF_TOKEN"
     echo "✅ HF_TOKEN configurado desde RunPod Secret"
-    echo "   Token length: ${#HF_TOKEN} characters"
-    echo "   Token prefix: ${HF_TOKEN:0:8}..."
 elif [ -n "$HF_TOKEN" ]; then
     echo "✅ HF_TOKEN configurado desde variable de entorno"
-    echo "   Token length: ${#HF_TOKEN} characters"
-    echo "   Token prefix: ${HF_TOKEN:0:8}..."
 else
     echo "❌ ERROR: HF_TOKEN no configurado"
     echo "💡 Configurar en RunPod usando Secrets: RUNPOD_SECRET_HF_TOKEN"
@@ -43,26 +33,16 @@ fi
 
 # Configurar autenticación de Hugging Face
 echo "🔐 Configurando autenticación de Hugging Face..."
-echo "   Using token: ${HF_TOKEN:0:8}...${HF_TOKEN: -4}"
-
 mkdir -p ~/.cache/huggingface
 echo "$HF_TOKEN" > ~/.cache/huggingface/token
-echo "✅ Token guardado en ~/.cache/huggingface/token"
 
 # Configurar git credentials para Hugging Face
 git config --global credential.helper store
 echo "https://MrMoferFRAN:$HF_TOKEN@huggingface.co" > ~/.git-credentials
-echo "✅ Git credentials configuradas para MrMoferFRAN"
-
-# Verificar archivos de configuración
-echo "🔍 VERIFICANDO CONFIGURACIÓN:"
-echo "   ~/.cache/huggingface/token exists: $([ -f ~/.cache/huggingface/token ] && echo "YES" || echo "NO")"
-echo "   ~/.git-credentials exists: $([ -f ~/.git-credentials ] && echo "YES" || echo "NO")"
 
 # También configurar usando huggingface-hub
 pip install --no-cache-dir huggingface-hub --upgrade
-echo "🔄 Intentando login con huggingface-hub..."
-python -c "from huggingface_hub import login; login('$HF_TOKEN'); print('✅ huggingface-hub login successful')" || echo "⚠️ huggingface-hub login failed, using git credentials"
+python -c "from huggingface_hub import login; login('$HF_TOKEN')" 2>/dev/null || echo "⚠️ huggingface-hub login failed, using git credentials"
 
 export NO_TORCH_COMPILE=1
 export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"
