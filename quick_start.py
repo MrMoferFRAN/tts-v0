@@ -37,12 +37,23 @@ logger = logging.getLogger(__name__)
 
 # Configuración del entorno
 os.environ.setdefault('NO_TORCH_COMPILE', '1')
+os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 os.environ.setdefault('HF_TOKEN', '|==>REMOVED')
+
+# Fix for torch.compiler compatibility issues
+import torch
+if hasattr(torch, 'compiler'):
+    if not hasattr(torch.compiler, 'is_compiling'):
+        torch.compiler.is_compiling = lambda: False
 
 class CSMVoiceCloner:
     """Clonador de voz usando CSM-1B nativo"""
     
     def __init__(self, model_path: str = "./models/sesame-csm-1b"):
+        # Apply torch.compiler compatibility patch
+        self._apply_compatibility_patches()
+        
         self.model_path = model_path
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
@@ -65,18 +76,47 @@ class CSMVoiceCloner:
         self._load_model()
         self._load_voice_profiles()
     
+    def _apply_compatibility_patches(self):
+        """Apply compatibility patches for PyTorch and transformers"""
+        try:
+            # Patch torch.compiler if needed
+            import torch
+            if hasattr(torch, 'compiler'):
+                if not hasattr(torch.compiler, 'is_compiling'):
+                    torch.compiler.is_compiling = lambda: False
+                    logger.info("✅ Applied torch.compiler compatibility patch")
+            
+            # Set compilation flags
+            if hasattr(torch, '_dynamo'):
+                torch._dynamo.config.suppress_errors = True
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not apply all compatibility patches: {e}")
+    
     def _load_model(self):
         """Carga el modelo y processor CSM-1B"""
         try:
             logger.info("📥 Loading CSM processor...")
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_path,
+                trust_remote_code=True
+            )
             
             logger.info("📥 Loading CSM model...")
-            self.model = CsmForConditionalGeneration.from_pretrained(
-                self.model_path,
-                device_map=self.device,
-                torch_dtype=torch.float32  # Usar float32 para evitar problemas de tipos mixtos
-            )
+            
+            # Additional compatibility fixes
+            with torch.no_grad():
+                self.model = CsmForConditionalGeneration.from_pretrained(
+                    self.model_path,
+                    device_map=self.device if torch.cuda.is_available() else None,
+                    torch_dtype=torch.float32,  # Usar float32 para evitar problemas de tipos mixtos
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True
+                )
+            
+            # Move model to device if not using device_map
+            if not torch.cuda.is_available() or self.device == "cpu":
+                self.model = self.model.to(self.device)
             
             logger.info("✅ CSM model loaded successfully")
             
@@ -202,13 +242,24 @@ class CSMVoiceCloner:
             
             # Generar audio
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs, 
-                    output_audio=True,
-                    max_new_tokens=max_tokens,
-                    temperature=temperature,
-                    do_sample=True
-                )
+                try:
+                    outputs = self.model.generate(
+                        **inputs, 
+                        output_audio=True,
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=True
+                    )
+                except Exception as gen_error:
+                    logger.warning(f"⚠️ Generation failed with error: {gen_error}")
+                    # Try without output_audio flag as fallback
+                    logger.info("🔄 Trying fallback generation method...")
+                    outputs = self.model.generate(
+                        **inputs, 
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=True
+                    )
             
             # Extraer audio de los outputs del modelo CSM
             if hasattr(outputs, 'audio_values'):
@@ -550,7 +601,7 @@ if __name__ == "__main__":
         logger.info(f"Loaded {len(cloner.voice_profiles)} voice profiles")
         
         # Verificar archivo de referencia
-        reference_voice = "voices/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo..mp3"
+        reference_voice = "voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
         if Path(reference_voice).exists():
             logger.info(f"✅ Found reference audio: {reference_voice}")
         else:

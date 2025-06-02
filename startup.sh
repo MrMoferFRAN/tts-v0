@@ -177,7 +177,7 @@ echo "✅ Directorios creados"
 
 # 7. Verificar archivo de voz de referencia
 echo "🔍 7. Verificando archivo de voz de referencia..."
-reference_voice="voices/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
+reference_voice="voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
 if [ -f "$reference_voice" ]; then
     echo "✅ Archivo de referencia encontrado: $reference_voice"
 else
@@ -260,4 +260,4 @@ echo "🛑 Presiona Ctrl+C para detener el servidor"
 echo "============================================================"
 
 # Ejecutar API
-#python quick_start.py 
+python quick_start.py 
