@@ -260,4 +260,4 @@ echo "🛑 Presiona Ctrl+C para detener el servidor"
 echo "============================================================"
 
 # Ejecutar API
-python quick_start.py 
+#python quick_start.py 
