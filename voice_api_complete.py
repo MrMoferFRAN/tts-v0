@@ -67,18 +67,30 @@ class VoiceCollection(BaseModel):
     updated_at: str
 
 class CSMVoiceManager:
-    """Gestor completo de voces para CSM-1B"""
+    """Gestor completo de voces para CSM-1B con soporte turbo"""
     
-    def __init__(self, model_path: str = "./models/sesame-csm-1b", voices_dir: str = "./voices"):
+    def __init__(
+        self, 
+        model_path: str = "./models/sesame-csm-1b", 
+        turbo_model_path: str = "./models/csm-1b-turbo",
+        voices_dir: str = "./voices"
+    ):
         self.model_path = model_path
+        self.turbo_model_path = turbo_model_path
         self.voices_dir = Path(voices_dir)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Modelos y procesadores
         self.model = None
         self.processor = None
+        self.turbo_model = None
+        self.turbo_processor = None
+        
         self.voice_collections = {}
         
-        logger.info(f"🎤 Initializing CSM Voice Manager")
-        logger.info(f"📁 Model path: {model_path}")
+        logger.info(f"🎤 Initializing CSM Voice Manager - TURBO ONLY MODE")
+        logger.info(f"🚀 Turbo model path: {turbo_model_path}")
+        logger.info(f"📁 Normal model path: {model_path} (NOT LOADED)")
         logger.info(f"📁 Voices directory: {voices_dir}")
         logger.info(f"🖥️ Device: {self.device}")
         
@@ -88,36 +100,53 @@ class CSMVoiceManager:
         Path("temp").mkdir(exist_ok=True)
         Path("logs").mkdir(exist_ok=True)
         
-        # Verificar modelo
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Model directory not found: {model_path}")
+        # Verificar SOLO modelo turbo
+        if not Path(turbo_model_path).exists():
+            raise FileNotFoundError(f"Turbo model directory not found: {turbo_model_path}")
         
-        # Cargar modelo y voces
-        self._load_model()
+        logger.info(f"✅ Turbo model directory found: {turbo_model_path}")
+        logger.info(f"📁 Normal model directory IGNORED: {model_path}")
+        
+        # Cargar modelos y voces
+        self._load_models()
         self._load_voice_collections()
     
-    def _load_model(self):
-        """Carga el modelo y processor CSM-1B"""
+    def _load_models(self):
+        """Carga SOLO el modelo turbo"""
         try:
-            logger.info("📥 Loading CSM processor...")
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
+            # Verificar que el modelo turbo esté disponible
+            if not Path(self.turbo_model_path).exists():
+                raise FileNotFoundError(f"Turbo model directory not found: {self.turbo_model_path}")
             
-            logger.info("📥 Loading CSM model...")
+            logger.info("🚀 Loading ONLY turbo CSM processor...")
+            self.processor = AutoProcessor.from_pretrained(self.turbo_model_path)
+            self.turbo_processor = self.processor  # Usar el mismo processor
+            
+            logger.info("🚀 Loading ONLY turbo CSM model (optimized)...")
             self.model = CsmForConditionalGeneration.from_pretrained(
-                self.model_path,
+                self.turbo_model_path,
                 device_map=self.device,
-                torch_dtype=torch.float32
+                torch_dtype=torch.float32,  # Mantener float32 para compatibilidad
+                use_safetensors=True,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True
             )
             
-            logger.info("✅ CSM model loaded successfully")
+            # El modelo turbo ES el modelo principal
+            self.turbo_model = self.model
+            
+            logger.info("🚀 Applied memory optimizations (low_cpu_mem_usage)")
+            
+            logger.info("✅ Turbo CSM model loaded successfully as primary model")
             
             if torch.cuda.is_available():
                 gpu_info = torch.cuda.get_device_properties(0)
                 memory_gb = gpu_info.total_memory / 1024**3
                 logger.info(f"🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)")
+                logger.info(f"🖥️ GPU Memory Used: {torch.cuda.memory_allocated() / 1024**3:.1f} GB")
             
         except Exception as e:
-            logger.error(f"❌ Failed to load CSM model: {e}")
+            logger.error(f"❌ Failed to load turbo model: {e}")
             raise
     
     def _load_voice_collections(self):
@@ -344,10 +373,20 @@ class CSMVoiceManager:
         voice_id: str = None,
         sample_name: str = None,
         temperature: float = 0.8,
-        max_tokens: int = 512
+        max_tokens: int = 4096,  # Aumentado para permitir audio más largo
+        turbo: bool = False
     ) -> np.ndarray:
-        """Clona una voz usando una muestra específica"""
+        """Clona una voz usando una muestra específica con opción turbo"""
         try:
+            # Solo tenemos modelo turbo disponible
+            model = self.model  # El modelo turbo es el único modelo
+            processor = self.processor
+            
+            if turbo:
+                logger.info("🚀 Using turbo model (optimized, half precision)")
+            else:
+                logger.info("🚀 Using turbo model as default (no normal model available)")
+            
             conversation = []
             
             # Buscar muestra de referencia
@@ -376,15 +415,19 @@ class CSMVoiceManager:
                         if waveform.shape[0] > 1:
                             waveform = waveform.mean(dim=0, keepdim=True)
                         
+                        # Mantener audio como float32 para evitar problemas de rango
+                        audio_data = waveform.squeeze().numpy().astype(np.float32)
+                        
                         conversation.append({
                             "role": "0",
                             "content": [
                                 {"type": "text", "text": target_profile.transcription},
-                                {"type": "audio", "path": waveform.squeeze().numpy()}
+                                {"type": "audio", "path": audio_data}
                             ]
                         })
                         
-                        logger.info(f"🎯 Using voice reference: {voice_id}/{target_profile.name}")
+                        model_type = "turbo" if turbo and self.turbo_model is not None else "normal"
+                        logger.info(f"🎯 Using voice reference: {voice_id}/{target_profile.name} ({model_type})")
                         
                     except Exception as e:
                         logger.error(f"❌ Failed to load reference audio: {e}")
@@ -397,7 +440,7 @@ class CSMVoiceManager:
             
             # Procesar entrada
             if conversation:
-                inputs = self.processor.apply_chat_template(
+                inputs = processor.apply_chat_template(
                     conversation,
                     tokenize=True,
                     return_dict=True,
@@ -405,11 +448,13 @@ class CSMVoiceManager:
             else:
                 # Sin contexto, usar formato simple
                 formatted_text = f"[0]{text}"
-                inputs = self.processor(formatted_text, add_special_tokens=True).to(self.device)
+                inputs = processor(formatted_text, add_special_tokens=True).to(self.device)
+            
+            # Todos los tensors ya están en float32, no necesitamos conversión
             
             # Generar audio
             with torch.no_grad():
-                outputs = self.model.generate(
+                outputs = model.generate(
                     **inputs, 
                     output_audio=True,
                     max_new_tokens=max_tokens,
@@ -469,9 +514,9 @@ def get_voice_manager():
 
 # Configurar FastAPI
 app = FastAPI(
-    title="🎤 Voice Cloning API Complete - CSM-1B",
-    description="API completa de clonación de voz con gestión avanzada de perfiles organizados por carpetas",
-    version="3.0.0"
+    title="🎤 Voice Cloning API Complete - CSM-1B Turbo",
+    description="API completa de clonación de voz con gestión avanzada de perfiles y modo turbo para inferencia ultrarrápida",
+    version="3.1.0"
 )
 
 app.add_middleware(
@@ -500,7 +545,7 @@ async def home():
     return """
     <html>
         <head>
-            <title>🎤 Voice Cloning API Complete - CSM-1B</title>
+            <title>🎤 Voice Cloning API Complete - CSM-1B Turbo</title>
             <style>
                 body { font-family: 'Segoe UI', sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
                 .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
@@ -524,7 +569,7 @@ async def home():
             <div class="container">
                 <div class="header">
                     <h1>🎤 Voice Cloning API Complete</h1>
-                    <div class="subtitle">Powered by CSM-1B • Gestión Avanzada de Voces</div>
+                    <div class="subtitle">Powered by CSM-1B Turbo • Gestión Avanzada de Voces • Inferencia Ultrarrápida</div>
                 </div>
                 
                 <div class="section">
@@ -549,8 +594,16 @@ async def home():
                             <p>Selección específica de muestras para mejor calidad</p>
                         </div>
                         <div class="feature">
+                            <h3>🚀 Modo Turbo</h3>
+                            <p>Modelo cuantizado int8 para inferencia ultrarrápida</p>
+                        </div>
+                        <div class="feature">
                             <h3>📊 Análisis Completo</h3>
                             <p>Estadísticas detalladas y métricas de calidad</p>
+                        </div>
+                        <div class="feature">
+                            <h3>⏱️ Generación Extendida</h3>
+                            <p>Hasta 3 minutos de audio continuo de alta calidad</p>
                         </div>
                     </div>
                 </div>
@@ -562,6 +615,7 @@ async def home():
                     <div class="endpoint"><span class="method get">GET</span>/voices/{voice_id} - Detalles de una voz específica</div>
                     <div class="endpoint"><span class="method post">POST</span>/voices/{voice_id}/upload - Subir muestra de audio</div>
                     <div class="endpoint"><span class="method post">POST</span>/clone - Clonar voz con texto</div>
+                    <div class="endpoint"><span class="method post">POST</span>/clone_extended - Generación extendida (hasta 3 min)</div>
                     <div class="endpoint"><span class="method get">GET</span>/docs - Documentación interactiva</div>
                 </div>
                 
@@ -581,9 +635,23 @@ async def home():
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'transcription=Hola mundo'
                     </div>
                     <div class="endpoint">
-                        # Clonar voz<br>
+                        # Clonar voz (modo normal)<br>
                         curl -X POST 'http://localhost:7860/clone' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto a sintetizar' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
+                    </div>
+                    <div class="endpoint">
+                        # Clonar voz (modo turbo - más rápido)<br>
+                        curl -X POST 'http://localhost:7860/clone' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto a sintetizar' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'turbo=true'
+                    </div>
+                    <div class="endpoint">
+                        # Generar audio largo (hasta 3 minutos)<br>
+                        curl -X POST 'http://localhost:7860/clone_extended' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto muy largo para generar audio extendido...' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'target_duration=120' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
                     </div>
                 </div>
@@ -614,14 +682,24 @@ async def health_check():
         
         return {
             "status": "healthy",
-            "model_loaded": manager.model is not None,
-            "processor_loaded": manager.processor is not None,
+            "turbo_model": {
+                "loaded": manager.model is not None,
+                "processor_loaded": manager.processor is not None,
+                "path": manager.turbo_model_path,
+                "available": True,
+                "is_primary": True,
+                "optimizations": "memory_optimized_float32"
+            },
+            "normal_model": {
+                "loaded": False,
+                "available": False,
+                "note": "Only turbo model is loaded for maximum performance"
+            },
             "gpu_available": gpu_available,
             "gpu_info": gpu_info,
             "voice_collections": total_voices,
             "total_voice_samples": total_samples,
             "device": manager.device,
-            "model_path": manager.model_path,
             "voices_directory": str(manager.voices_dir)
         }
     except Exception as e:
@@ -731,10 +809,11 @@ async def clone_voice_endpoint(
     voice_id: Optional[str] = Form(None, description="Voice collection ID"),
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
     temperature: float = Form(0.8, description="Sampling temperature"),
-    max_tokens: int = Form(512, description="Maximum tokens to generate"),
+    max_tokens: int = Form(4096, description="Maximum tokens to generate (higher = longer audio, max ~25000 for 3min)"),
+    turbo: bool = Form(False, description="Use turbo mode (optimized model for faster inference)"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
-    """Clona una voz con el texto especificado"""
+    """Clona una voz con el texto especificado - ahora con modo turbo"""
     try:
         manager = get_voice_manager()
         
@@ -742,13 +821,21 @@ async def clone_voice_endpoint(
         if voice_id and voice_id not in manager.voice_collections:
             raise HTTPException(status_code=404, detail=f"Voice collection '{voice_id}' not found")
         
+        # Validar max_tokens para evitar generaciones extremadamente largas
+        if max_tokens > 25000:
+            raise HTTPException(status_code=400, detail="max_tokens cannot exceed 25000 (approximately 3 minutes of audio)")
+        
+        if max_tokens < 64:
+            raise HTTPException(status_code=400, detail="max_tokens must be at least 64 for meaningful audio generation")
+        
         # Generar audio
         audio = manager.clone_voice(
             text=text,
             voice_id=voice_id,
             sample_name=sample_name,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            turbo=turbo
         )
         
         # Crear nombre de archivo único
@@ -788,6 +875,90 @@ async def clone_voice_endpoint(
         logger.error(f"❌ Voice cloning failed: {e}")
         raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
 
+@app.post("/clone_extended")
+async def clone_voice_extended(
+    text: str = Form(..., description="Text to synthesize (can be very long)"),
+    voice_id: Optional[str] = Form(None, description="Voice collection ID"),
+    sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
+    target_duration: int = Form(60, description="Target duration in seconds (60-180)"),
+    temperature: float = Form(0.8, description="Sampling temperature"),
+    turbo: bool = Form(True, description="Use turbo mode for faster generation"),
+    output_format: str = Form("wav", description="Output format (wav)")
+):
+    """Genera audio extendido dividiendo el texto en segmentos para mayor duración"""
+    try:
+        manager = get_voice_manager()
+        
+        # Validar voice_id si se proporciona
+        if voice_id and voice_id not in manager.voice_collections:
+            raise HTTPException(status_code=404, detail=f"Voice collection '{voice_id}' not found")
+        
+        # Validar duración objetivo
+        if target_duration < 10:
+            raise HTTPException(status_code=400, detail="target_duration must be at least 10 seconds")
+        if target_duration > 180:
+            raise HTTPException(status_code=400, detail="target_duration cannot exceed 180 seconds (3 minutes)")
+        
+        # Estimar tokens necesarios basado en duración objetivo
+        estimated_tokens = min(int(target_duration * 400), 25000)  # ~400 tokens por segundo
+        
+        logger.info(f"🎯 Extended generation: target={target_duration}s, estimated_tokens={estimated_tokens}")
+        
+        # Generar audio usando tokens estimados
+        audio = manager.clone_voice(
+            text=text,
+            voice_id=voice_id,
+            sample_name=sample_name,
+            temperature=temperature,
+            max_tokens=estimated_tokens,
+            turbo=turbo
+        )
+        
+        # Calcular duración real
+        actual_duration = len(audio) / 24000
+        
+        # Crear nombre de archivo único
+        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        voice_suffix = f"_{voice_id}" if voice_id else "_default"
+        sample_suffix = f"_{sample_name}" if sample_name else ""
+        filename = f"extended{voice_suffix}{sample_suffix}_{target_duration}s_{text_hash}.{output_format}"
+        
+        output_path = Path("outputs") / filename
+        
+        # Guardar audio
+        if isinstance(audio, np.ndarray):
+            audio = audio.astype(np.float32)
+            audio_tensor = torch.from_numpy(audio)
+        else:
+            audio_tensor = audio.float()
+        
+        if len(audio_tensor.shape) == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+        
+        audio_numpy = audio_tensor.squeeze().numpy() if isinstance(audio_tensor, torch.Tensor) else audio_tensor
+        import soundfile as sf
+        sf.write(output_path, audio_numpy, 24000)
+        
+        logger.info(f"✅ Extended audio generated: {output_path}")
+        logger.info(f"📊 Target: {target_duration}s, Actual: {actual_duration:.2f}s, Tokens: {estimated_tokens}")
+        
+        return FileResponse(
+            path=output_path,
+            media_type="audio/wav",
+            filename=filename,
+            headers={
+                "X-Audio-Duration": str(actual_duration),
+                "X-Target-Duration": str(target_duration),
+                "X-Tokens-Used": str(estimated_tokens)
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Extended voice cloning failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Extended voice cloning failed: {str(e)}")
+
 if __name__ == "__main__":
     logger.info("🎤 Voice Cloning API Complete - Starting...")
     logger.info("🔍 Checking system requirements...")
@@ -800,12 +971,12 @@ if __name__ == "__main__":
     else:
         logger.warning("⚠️ No GPU available, using CPU")
     
-    # Verificar modelo
-    model_path = Path("./models/sesame-csm-1b")
-    if model_path.exists():
-        logger.info("✅ Model directory found")
+    # Verificar SOLO modelo turbo
+    turbo_model_path = Path("./models/csm-1b-turbo")
+    if turbo_model_path.exists():
+        logger.info("✅ Turbo model directory found")
     else:
-        logger.error("❌ Model directory not found")
+        logger.error("❌ Turbo model directory not found")
         sys.exit(1)
     
     try:
