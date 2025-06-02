@@ -27,6 +27,11 @@ from transformers import CsmForConditionalGeneration, AutoProcessor
 import numpy as np
 from pydantic import BaseModel
 
+# Fix for torch.compiler compatibility issues
+# Some PyTorch versions don't have torch.compiler.is_compiling
+if not hasattr(torch.compiler, 'is_compiling'):
+    torch.compiler.is_compiling = lambda: False
+
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,

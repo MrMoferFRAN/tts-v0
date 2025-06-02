@@ -2,7 +2,7 @@
 # 🚀 RUNPOD CSM VOICE CLONING STARTUP - VERSIÓN ROBUSTA
 # Configurado para: runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 # Sistema: CSM-1B nativo de Transformers 4.52.4+
-# Incluye: Dependencias de audio (libsndfile, ffmpeg, soundfile) para backends robustos
+# Incluye: Dependencias de audio (libsndfile, ffmpeg, soundfile, librosa) para backends robustos
 
 set -e  # Exit on any error
 
@@ -75,8 +75,8 @@ apt-get update && apt-get install -y \
     ffmpeg \
     --no-install-recommends
 
-echo "📦 Instalando soundfile para manejo robusto de archivos de audio..."
-pip install --no-cache-dir soundfile
+echo "📦 Instalando soundfile y librosa para manejo robusto de archivos de audio..."
+pip install --no-cache-dir soundfile librosa
 
 # Verificar que los backends de audio estén disponibles
 echo "🔍 Verificando backends de audio..."
@@ -90,6 +90,13 @@ try:
     print('✅ SoundFile disponible')
 except ImportError:
     print('❌ SoundFile no disponible')
+    exit(1)
+
+try:
+    import librosa
+    print('✅ Librosa disponible')
+except ImportError:
+    print('❌ Librosa no disponible')
     exit(1)
 
 if not backends:
@@ -203,6 +210,12 @@ try:
 except ImportError:
     missing.append('soundfile')
 
+try:
+    import librosa
+    print(f'✅ Librosa: disponible')
+except ImportError:
+    missing.append('librosa')
+
 if missing:
     print(f'❌ Missing packages: {missing}')
     sys.exit(1)
@@ -217,7 +230,7 @@ if [ $? -ne 0 ]; then
     pip install transformers>=4.52.1 --upgrade
     
     # Instalar dependencias de API y audio
-    pip install fastapi uvicorn python-multipart aiofiles soundfile
+    pip install fastapi uvicorn python-multipart aiofiles soundfile librosa
     
     # Verificar instalación
     python -c "
@@ -232,12 +245,46 @@ mkdir -p outputs temp logs voices
 echo "✅ Directorios creados"
 
 # 7. Verificar archivo de voz de referencia
-echo "🔍 7. Verificando archivo de voz de referencia..."
-reference_voice="voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
-if [ -f "$reference_voice" ]; then
-    echo "✅ Archivo de referencia encontrado: $reference_voice"
+echo "🔍 7. Verificando archivos de voz de referencia..."
+reference_voice_old="voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
+reference_voice_new="voices/fran-fem/fran_fem_sample.wav"
+
+if [ -f "$reference_voice_new" ]; then
+    echo "✅ Archivo de referencia encontrado: $reference_voice_new"
+elif [ -f "$reference_voice_old" ]; then
+    echo "⚠️ Archivo con nombre problemático encontrado, renombrando..."
+    cd voices/fran-fem && mv *.wav fran_fem_sample.wav && cd ../..
+    echo "✅ Archivo renombrado a: $reference_voice_new"
+    
+    # Actualizar profiles.json si existe
+    if [ -f "voices/fran-fem/profiles.json" ]; then
+        echo "🔧 Actualizando profiles.json..."
+        python -c "
+import json
+from datetime import datetime
+
+try:
+    with open('voices/fran-fem/profiles.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # Actualizar path del audio
+    if 'profiles' in data and len(data['profiles']) > 0:
+        data['profiles'][0]['name'] = 'fran_fem_sample'
+        data['profiles'][0]['audio_path'] = '/workspace/runttspod/voices/fran-fem/fran_fem_sample.wav'
+        data['updated_at'] = datetime.now().isoformat()
+        
+        with open('voices/fran-fem/profiles.json', 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        print('✅ profiles.json actualizado')
+    else:
+        print('⚠️ profiles.json no tiene el formato esperado')
+except Exception as e:
+    print(f'❌ Error actualizando profiles.json: {e}')
+"
+    fi
 else
-    echo "⚠️ Archivo de referencia no encontrado: $reference_voice"
+    echo "⚠️ Archivo de referencia no encontrado"
     echo "💡 El sistema funcionará, pero sin perfil de voz predefinido"
 fi
 
@@ -269,6 +316,12 @@ try:
         memory_gb = gpu_info.total_memory / 1024**3
         print(f'🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)')
     
+    # Test torch.compiler compatibility
+    if not hasattr(torch.compiler, 'is_compiling'):
+        print('⚠️  torch.compiler compatibility patch needed')
+    else:
+        print('✅ torch.compiler compatible')
+    
 except Exception as e:
     print(f'❌ CSM system test failed: {e}')
     exit(1)
@@ -287,7 +340,7 @@ echo "============================================================"
 echo "📦 Sistema: CSM-1B nativo de Transformers"
 echo "🤖 Modelo: models/sesame-csm-1b ($(du -h models/sesame-csm-1b/model.safetensors | cut -f1))"
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
-echo "🔧 API: FastAPI + Uvicorn"
+echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
 echo "============================================================"
 
@@ -298,7 +351,7 @@ echo "🌐 ACCESO A LA API:"
 echo "   • URL Principal: http://0.0.0.0:7860"
 echo "   • Documentación: http://0.0.0.0:7860/docs"
 echo "   • Health Check: http://0.0.0.0:7860/health"
-echo "   • Voice Profiles: http://0.0.0.0:7860/voices"
+echo "   • Voice Collections: http://0.0.0.0:7860/voices"
 echo "============================================================"
 echo "🎯 COMANDOS DE PRUEBA:"
 echo "   # Health check:"
@@ -308,12 +361,17 @@ echo "   # Listar voces:"
 echo "   curl http://localhost:7860/voices"
 echo ""
 echo "   # Clonar voz:"
-echo "   curl -X POST 'http://localhost:7860/clone-voice' \\"
+echo "   curl -X POST 'http://localhost:7860/clone' \\"
 echo "        -F 'text=Hola mundo' \\"
-echo "        -F 'temperature=0.7'"
+echo "        -F 'voice_id=fran-fem'"
+echo ""
+echo "   # Subir nueva voz:"
+echo "   curl -X POST 'http://localhost:7860/voices/mi-voz/upload' \\"
+echo "        -F 'audio_file=@audio.wav' \\"
+echo "        -F 'transcription=Texto del audio'"
 echo "============================================================"
 echo "🛑 Presiona Ctrl+C para detener el servidor"
 echo "============================================================"
 
-# Ejecutar API
-python quick_start.py 
+# Ejecutar API completa
+python voice_api_complete.py 

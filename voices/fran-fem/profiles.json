@@ -2,8 +2,8 @@
   "voice_id": "fran-fem",
   "profiles": [
     {
-      "name": "voices",
-      "audio_path": "/workspace/runttspod/voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav",
+      "name": "fran_fem_sample",
+      "audio_path": "/workspace/runttspod/voices/fran-fem/fran_fem_sample.wav",
       "transcription": "Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?",
       "language": "es",
       "quality_score": 1.0,
@@ -15,5 +15,5 @@
   "total_samples": 1,
   "average_duration": 6.309666666666667,
   "created_at": "2025-05-31T04:18:53.111940",
-  "updated_at": "2025-05-31T04:32:16.355630"
+  "updated_at": "2025-06-02T14:31:00.000000"
 }
