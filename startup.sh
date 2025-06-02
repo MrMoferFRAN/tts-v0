@@ -35,8 +35,14 @@ fi
 echo "🔐 Configurando autenticación de Hugging Face..."
 mkdir -p ~/.cache/huggingface
 echo "$HF_TOKEN" > ~/.cache/huggingface/token
+
+# Configurar git credentials para Hugging Face
 git config --global credential.helper store
-echo "https://user:$HF_TOKEN@huggingface.co" > ~/.git-credentials
+echo "https://MrMoferFRAN:$HF_TOKEN@huggingface.co" > ~/.git-credentials
+
+# También configurar usando huggingface-hub
+pip install --no-cache-dir huggingface-hub --upgrade
+python -c "from huggingface_hub import login; login('$HF_TOKEN')" || echo "⚠️ huggingface-hub login failed, using git credentials"
 
 export NO_TORCH_COMPILE=1
 export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"
