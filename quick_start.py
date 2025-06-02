@@ -236,11 +236,11 @@ class CSMVoiceCloner:
                         audio = audio.float().cpu().numpy()
                     else:
                         audio = np.array(audio, dtype=np.float32)
-        else:
+                else:
                     # Lista vacía, crear audio de silencio
                     logger.warning("⚠️ Model returned empty audio, generating silence")
                     audio = np.zeros(24000, dtype=np.float32)  # 1 segundo de silencio
-    else:
+            else:
                 # Convertir a numpy con dtype explícito
                 audio = np.array(audio, dtype=np.float32)
             
@@ -571,4 +571,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Failed to start server: {e}")
         traceback.print_exc()
-        sys.exit(1) 
+        sys.exit(1)
