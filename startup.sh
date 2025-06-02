@@ -18,10 +18,15 @@ echo "✅ GPU verification complete"
 
 # 2. Setup environment variables
 echo "🔑 2. Configurando variables de entorno..."
-# Usar variable de entorno, no hardcodear
+# Verificar HF_TOKEN requerido
 if [ -z "$HF_TOKEN" ]; then
-    echo "⚠️ HF_TOKEN no configurado como variable de entorno"
-    echo "💡 Configurar en RunPod: HF_TOKEN=tu_token_aqui"
+    echo "❌ ERROR: HF_TOKEN no configurado como variable de entorno"
+    echo "💡 Configurar en RunPod Environment Variables:"
+    echo "   HF_TOKEN = tu_token_de_huggingface"
+    echo "🛑 Es requerido para descargar el modelo CSM-1B"
+    exit 1
+else
+    echo "✅ HF_TOKEN configurado correctamente"
 fi
 export NO_TORCH_COMPILE=1
 export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"
@@ -61,8 +66,30 @@ else
         git lfs install
     fi
     
-    # Download model
-    git clone https://huggingface.co/sesame/csm-1b sesame-csm-1b
+    # Download model with authentication
+    echo "🔑 Usando HF_TOKEN para autenticación..."
+    
+    # Configurar git con token para Hugging Face
+    git config --global credential.helper store
+    echo "https://$HF_TOKEN@huggingface.co" > ~/.git-credentials
+    
+    # Intentar descarga con git
+    if git clone https://huggingface.co/sesame/csm-1b sesame-csm-1b; then
+        echo "✅ Descarga con git exitosa"
+    else
+        echo "⚠️ Git falló, intentando con huggingface_hub..."
+        # Instalar huggingface_hub si no está disponible
+        pip install huggingface_hub --quiet
+        
+        # Usar Python para descargar
+        python -c "
+from huggingface_hub import snapshot_download
+import os
+os.environ['HUGGINGFACE_HUB_TOKEN'] = '$HF_TOKEN'
+snapshot_download(repo_id='sesame/csm-1b', local_dir='sesame-csm-1b', token='$HF_TOKEN')
+print('✅ Descarga con huggingface_hub exitosa')
+"
+    fi
     cd ..
     
     if [ -f "./models/sesame-csm-1b/model.safetensors" ]; then
