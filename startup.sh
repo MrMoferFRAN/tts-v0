@@ -2,6 +2,7 @@
 # 🚀 RUNPOD CSM VOICE CLONING STARTUP - VERSIÓN ROBUSTA
 # Configurado para: runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 # Sistema: CSM-1B nativo de Transformers 4.52.4+
+# Incluye: Dependencias de audio (libsndfile, ffmpeg, soundfile) para backends robustos
 
 set -e  # Exit on any error
 
@@ -62,6 +63,49 @@ pip install --no-cache-dir \
     --upgrade
 
 echo "✅ Dependencias críticas instaladas"
+
+# 3.5. INSTALAR DEPENDENCIAS DE AUDIO (CRÍTICO)
+echo "🔊 3.5. INSTALANDO DEPENDENCIAS DE AUDIO..."
+echo "📦 Instalando librerías de sistema para audio..."
+
+# Instalar librerías de sistema necesarias para torchaudio backends
+apt-get update && apt-get install -y \
+    libsndfile1 \
+    libsndfile1-dev \
+    ffmpeg \
+    --no-install-recommends
+
+echo "📦 Instalando soundfile para manejo robusto de archivos de audio..."
+pip install --no-cache-dir soundfile
+
+# Verificar que los backends de audio estén disponibles
+echo "🔍 Verificando backends de audio..."
+python -c "
+import torchaudio
+backends = torchaudio.list_audio_backends()
+print(f'✅ TorchAudio backends disponibles: {backends}')
+
+try:
+    import soundfile as sf
+    print('✅ SoundFile disponible')
+except ImportError:
+    print('❌ SoundFile no disponible')
+    exit(1)
+
+if not backends:
+    print('❌ No hay backends de audio disponibles para torchaudio')
+    print('⚠️  Esto podría causar errores al guardar archivos de audio')
+    exit(1)
+else:
+    print('✅ Backends de audio configurados correctamente')
+"
+
+if [ $? -ne 0 ]; then
+    echo "❌ Error configurando dependencias de audio"
+    exit 1
+fi
+
+echo "✅ Dependencias de audio instaladas y verificadas"
 
 # 4. Verificar modelo CSM-1B
 echo "🔍 4. Verificando modelo CSM-1B..."
@@ -144,8 +188,20 @@ except ImportError:
 try:
     import torchaudio
     print(f'✅ TorchAudio: {torchaudio.__version__}')
+    
+    # Verificar backends de audio
+    backends = torchaudio.list_audio_backends()
+    print(f'✅ TorchAudio backends: {backends}')
+    if not backends:
+        print('⚠️  Sin backends de audio - puede causar problemas')
 except ImportError:
     missing.append('torchaudio')
+
+try:
+    import soundfile as sf
+    print(f'✅ SoundFile: disponible')
+except ImportError:
+    missing.append('soundfile')
 
 if missing:
     print(f'❌ Missing packages: {missing}')
@@ -160,8 +216,8 @@ if [ $? -ne 0 ]; then
     # Instalar Transformers actualizado
     pip install transformers>=4.52.1 --upgrade
     
-    # Instalar dependencias de API
-    pip install fastapi uvicorn python-multipart aiofiles
+    # Instalar dependencias de API y audio
+    pip install fastapi uvicorn python-multipart aiofiles soundfile
     
     # Verificar instalación
     python -c "

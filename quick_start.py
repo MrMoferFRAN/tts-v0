@@ -514,8 +514,10 @@ async def clone_voice_endpoint(
         if len(audio_tensor.shape) == 1:
             audio_tensor = audio_tensor.unsqueeze(0)
         
-        # Guardar con dtype específico para evitar errores
-        torchaudio.save(output_path, audio_tensor, 24000)
+        # Guardar con soundfile para evitar errores de backend
+        audio_numpy = audio_tensor.squeeze().numpy() if isinstance(audio_tensor, torch.Tensor) else audio_tensor
+        import soundfile as sf
+        sf.write(output_path, audio_numpy, 24000)
         
         logger.info(f"✅ Generated audio: {output_path}")
         
