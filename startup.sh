@@ -1,11 +1,11 @@
 #!/bin/bash
-# 🚀 RUNPOD CSM VOICE CLONING STARTUP - VERSIÓN FINAL
+# 🚀 RUNPOD CSM VOICE CLONING STARTUP - VERSIÓN ROBUSTA
 # Configurado para: runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 # Sistema: CSM-1B nativo de Transformers 4.52.4+
 
 set -e  # Exit on any error
 
-echo "🎯 RUNPOD CSM VOICE CLONING - STARTUP FINAL"
+echo "🎯 RUNPOD CSM VOICE CLONING - STARTUP ROBUSTO"
 echo "============================================================"
 
 # 1. Environment Verification
@@ -18,16 +18,32 @@ echo "✅ GPU verification complete"
 
 # 2. Setup environment variables
 echo "🔑 2. Configurando variables de entorno..."
-export HF_TOKEN=|==>REMOVED
+# Usar variable de entorno, no hardcodear
+if [ -z "$HF_TOKEN" ]; then
+    echo "⚠️ HF_TOKEN no configurado como variable de entorno"
+    echo "💡 Configurar en RunPod: HF_TOKEN=tu_token_aqui"
+fi
 export NO_TORCH_COMPILE=1
 export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"
-echo 'export HF_TOKEN=|==>REMOVED' >> ~/.bashrc
 echo 'export NO_TORCH_COMPILE=1' >> ~/.bashrc
 echo 'export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"' >> ~/.bashrc
 echo "✅ Variables de entorno configuradas"
 
-# 3. Verificar modelo CSM-1B
-echo "🔍 3. Verificando modelo CSM-1B..."
+# 3. INSTALAR DEPENDENCIAS CRÍTICAS PRIMERO
+echo "🔧 3. INSTALANDO DEPENDENCIAS CRÍTICAS..."
+pip install --no-cache-dir \
+    "transformers>=4.52.1" \
+    "accelerate>=0.20.0" \
+    fastapi \
+    uvicorn \
+    python-multipart \
+    aiofiles \
+    --upgrade
+
+echo "✅ Dependencias críticas instaladas"
+
+# 4. Verificar modelo CSM-1B
+echo "🔍 4. Verificando modelo CSM-1B..."
 if [ -d "./models/sesame-csm-1b" ]; then
     model_size=$(du -h models/sesame-csm-1b/model.safetensors | cut -f1)
     echo "✅ Modelo CSM-1B encontrado: $model_size"
@@ -57,16 +73,16 @@ else
     fi
 fi
 
-# 4. Verificar dataset Elise (opcional)
-echo "🔍 4. Verificando dataset Elise..."
+# 5. Verificar dataset Elise (opcional)
+echo "🔍 5. Verificando dataset Elise..."
 if [ -d "./datasets/csm-1b-elise" ]; then
     echo "✅ Dataset Elise CSM ya existe"
 else
     echo "⚠️ Dataset Elise no encontrado (opcional)"
 fi
 
-# 5. VERIFICAR E INSTALAR DEPENDENCIAS
-echo "🔧 5. VERIFICANDO DEPENDENCIAS..."
+# 6. VERIFICAR DEPENDENCIAS PYTHON
+echo "🔧 6. VERIFICANDO DEPENDENCIAS PYTHON..."
 
 # Verificar Python packages críticos
 echo "📦 Verificando dependencias críticas..."
