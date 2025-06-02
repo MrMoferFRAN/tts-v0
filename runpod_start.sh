@@ -10,14 +10,18 @@ echo "============================================================"
 
 # 1. Verificar variable de entorno crítica
 echo "🔑 1. Verificando variables de entorno..."
-if [ -z "$HF_TOKEN" ]; then
+if [ -n "$RUNPOD_SECRET_HF_TOKEN" ]; then
+    export HF_TOKEN="$RUNPOD_SECRET_HF_TOKEN"
+    echo "✅ HF_TOKEN configurado desde RunPod Secret"
+elif [ -n "$HF_TOKEN" ]; then
+    echo "✅ HF_TOKEN configurado desde variable de entorno"
+else
     echo "❌ ERROR: HF_TOKEN no configurado"
-    echo "💡 Configurar en RunPod Environment Variables:"
-    echo "   HF_TOKEN = tu_token_de_huggingface"
+    echo "💡 Configurar en RunPod usando Secrets:"
+    echo "   RUNPOD_SECRET_HF_TOKEN = tu_token_de_huggingface"
+    echo "💡 O como variable de entorno: HF_TOKEN"
     echo "🛑 Abortando arranque..."
     exit 1
-else
-    echo "✅ HF_TOKEN configurado correctamente"
 fi
 
 # 2. Navegar al workspace

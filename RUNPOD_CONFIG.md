@@ -7,7 +7,18 @@
 runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 ```
 
-### **Environment Variables**
+### **RunPod Secrets (Recomendado - MÁS SEGURO)**
+| Secret Name | Valor | Descripción |
+|-------------|-------|-------------|
+| `RUNPOD_SECRET_HF_TOKEN` | `hf_xxxxxxxxxxxxxxxxxxxxxxxxx` | Token de Hugging Face (REQUERIDO) |
+
+**Cómo configurar RunPod Secrets:**
+1. En RunPod, ve a **Settings → Secrets**
+2. Crear nuevo Secret: `RUNPOD_SECRET_HF_TOKEN`
+3. Valor: Tu token de Hugging Face
+4. Al crear el pod, selecciona este Secret
+
+### **Environment Variables (Alternativa)**
 | Variable | Valor | Descripción |
 |----------|-------|-------------|
 | `HF_TOKEN` | `hf_xxxxxxxxxxxxxxxxxxxxxxxxx` | Token de Hugging Face (REQUERIDO) |
@@ -180,7 +191,8 @@ curl http://localhost:7860/health | jq
 
 ```
 Container Image: runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
-Environment Variables: HF_TOKEN=tu_token_aqui
+RunPod Secret: RUNPOD_SECRET_HF_TOKEN=tu_token_aqui (RECOMENDADO)
+Environment Variables: HF_TOKEN=tu_token_aqui (alternativa)
 Container Start Command: bash -c "cd /workspace && (git clone https://github.com/MrMoferFRAN/runttspod.git || (cd runttspod && git pull origin main)) && cd runttspod && chmod +x startup.sh && ./startup.sh"
 Container Disk: 100GB
 GPU: RTX 4090 24GB (mínimo)
