@@ -680,14 +680,11 @@ class CSMVoiceManager:
                         if waveform.shape[0] > 1:
                             waveform = waveform.mean(dim=0, keepdim=True)
                         
-                        # ALWAYS keep reference audio in float32 – float16 causes out-of-bounds indices
-                        audio_data = waveform.squeeze().numpy().astype(np.float32)
-                        
                         conversation.append({
                             "role": "0",
                             "content": [
                                 {"type": "text", "text": target_profile.transcription},
-                                {"type": "audio", "path": audio_data}
+                                {"type": "audio", "path": target_profile.audio_path}
                             ]
                         })
                         
@@ -700,18 +697,21 @@ class CSMVoiceManager:
             # -------------------------------------------------
             # 1) Preparar kwargs de generación con control total
             # -------------------------------------------------
-            generation_kwargs = dict(
+            gen_cfg = model.generation_config.clone()
+            gen_cfg.do_sample = True
+            gen_cfg.temperature = temperature
+            gen_cfg.top_p = top_p
+            gen_cfg.top_k = top_k
+            gen_cfg.repetition_penalty = repetition_penalty
+            gen_cfg.depth_decoder_do_sample = depth_decoder_do_sample
+            gen_cfg.depth_decoder_temperature = depth_decoder_temperature
+            
+            gen_kwargs = dict(
                 output_audio=True,
                 max_new_tokens=max_tokens,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                depth_decoder_do_sample=depth_decoder_do_sample,
-                depth_decoder_temperature=depth_decoder_temperature,
+                generation_config=gen_cfg,
             )
-            
+
             # -------------------------------------------------
             # 2) Segmentar texto muy largo para evitar drift
             # -------------------------------------------------
