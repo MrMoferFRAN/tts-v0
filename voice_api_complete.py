@@ -68,15 +68,25 @@ def setup_cuda_compatibility():
                 print(f"🐍 PyTorch Version: {pytorch_version}")
                 
                 if major_version < 2 or (major_version == 2 and minor_version < 5):
-                    print("⚠️ PyTorch < 2.5 with RTX 5090 - using conservative mode")
-                    print("🔧 Applying compatibility workarounds...")
+                    print("⚠️ PyTorch < 2.5 with RTX 5090 - kernel incompatibility likely")
+                    print("🔧 Testing CUDA compatibility...")
                     
-                    # Set conservative mode instead of forcing CPU
-                    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256,expandable_segments:False'
-                    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous for stability
-                    
-                    print("✅ RTX 5090 compatibility mode enabled")
-                    return True  # Allow CUDA with conservative settings
+                    # Test if basic CUDA operations work
+                    try:
+                        test_tensor = torch.tensor([1.0, 2.0], device='cuda')
+                        result = test_tensor + 1.0
+                        print("✅ Basic CUDA operations work - using conservative mode")
+                        
+                        # Set conservative mode
+                        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256,expandable_segments:False'
+                        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+                        return True
+                        
+                    except Exception as cuda_test_error:
+                        print(f"❌ CUDA test failed: {cuda_test_error}")
+                        print("🔄 Forcing CPU mode for RTX 5090 stability")
+                        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+                        return False  # Force CPU mode
                 else:
                     print("✅ PyTorch >= 2.5 - full RTX 5090 support available")
                     return True
@@ -162,6 +172,22 @@ class CSMVoiceManager:
         global cuda_available
         self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
         
+        # Check if we're on RTX 5090 with compatibility issues
+        self.is_rtx5090_problematic = False
+        if torch.cuda.is_available():
+            try:
+                device_props = torch.cuda.get_device_properties(0)
+                if device_props.major >= 12:  # RTX 5090
+                    pytorch_version = torch.__version__
+                    major_version = int(pytorch_version.split('.')[0])
+                    minor_version = int(pytorch_version.split('.')[1])
+                    
+                    if major_version < 2 or (major_version == 2 and minor_version < 5):
+                        self.is_rtx5090_problematic = True
+                        logger.warning("🚨 RTX 5090 with PyTorch < 2.5 detected - enabling special handling")
+            except:
+                pass
+        
         if not cuda_available and torch.cuda.is_available():
             logger.info("⚠️ CUDA available but incompatible GPU detected - using CPU mode")
         elif not torch.cuda.is_available():
@@ -227,10 +253,18 @@ class CSMVoiceManager:
                     # Optimize loading based on GPU architecture
                     if device_props.major >= 12:  # RTX 5090
                         logger.info("🚨 RTX 5090 detected - using conservative loading")
-                        model_kwargs.update({
-                            "device_map": self.device,
-                            "torch_dtype": torch.float32,  # Most conservative for compatibility
-                        })
+                        # Use CPU for RTX 5090 with PyTorch < 2.5 to avoid kernel issues
+                        if self.is_rtx5090_problematic:
+                            logger.info("🔄 Loading RTX 5090 model on CPU due to compatibility issues")
+                            model_kwargs.update({
+                                "device_map": "cpu",
+                                "torch_dtype": torch.float32,  # CPU compatible
+                            })
+                        else:
+                            model_kwargs.update({
+                                "device_map": self.device,
+                                "torch_dtype": torch.float32,  # Most conservative for compatibility
+                            })
                     elif device_props.major >= 9:  # RTX 4090 series with sm_90 support
                         logger.info("🚀 RTX 4090+ series detected - using advanced loading")
                         model_kwargs.update({
@@ -622,44 +656,117 @@ class CSMVoiceManager:
             
             # Generación con manejo robusto de errores CUDA
             try:
-                with torch.no_grad():
-                    # Clear CUDA cache before generation for stability
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                # Special handling for RTX 5090 with kernel compatibility issues
+                if self.is_rtx5090_problematic:
+                    logger.info("🚨 Using RTX 5090 compatible generation mode (CPU)")
                     
-                    outputs = model.generate(
-                        **inputs, 
-                        output_audio=True,
-                        max_new_tokens=max_tokens,
-                        temperature=temperature,
-                        do_sample=True
-                    )
+                    # Ensure all inputs are on CPU and correct dtype
+                    cpu_inputs = {}
+                    for key, value in inputs.items():
+                        if hasattr(value, 'cpu'):
+                            cpu_value = value.cpu()
+                            # Ensure consistent dtype
+                            if hasattr(cpu_value, 'float'):
+                                cpu_inputs[key] = cpu_value.float()
+                            else:
+                                cpu_inputs[key] = cpu_value
+                        else:
+                            cpu_inputs[key] = value
+                    
+                    # Model should already be on CPU for RTX 5090 problematic cases
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            **cpu_inputs,
+                            output_audio=True,
+                            max_new_tokens=min(max_tokens, 1536),  # Conservative for CPU
+                            temperature=temperature,
+                            do_sample=True,
+                            use_cache=False
+                        )
+                    
+                    logger.info("✅ RTX 5090 CPU generation completed successfully")
+                
+                else:
+                    # Standard CUDA generation
+                    with torch.no_grad():
+                        # Clear CUDA cache before generation for stability
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        outputs = model.generate(
+                            **inputs, 
+                            output_audio=True,
+                            max_new_tokens=max_tokens,
+                            temperature=temperature,
+                            do_sample=True
+                        )
                     
             except RuntimeError as cuda_error:
                 if "CUDA" in str(cuda_error):
                     logger.warning(f"⚠️ CUDA error during generation: {cuda_error}")
-                    logger.info("🔄 Attempting recovery...")
                     
-                    # Clear cache and retry with lower memory usage
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
+                    # Check for RTX 5090 specific "no kernel image" error
+                    if "no kernel image is available for execution on the device" in str(cuda_error):
+                        logger.warning("🚨 RTX 5090 kernel incompatibility detected!")
+                        logger.info("🔄 Forcing CPU mode for this generation...")
+                        
+                        # Move model and inputs to CPU for this generation
+                        try:
+                            # Move inputs to CPU
+                            cpu_inputs = {}
+                            for key, value in inputs.items():
+                                if hasattr(value, 'cpu'):
+                                    cpu_inputs[key] = value.cpu()
+                                else:
+                                    cpu_inputs[key] = value
+                            
+                            # Temporarily move model to CPU
+                            original_device = model.device
+                            model.cpu()
+                            
+                            with torch.no_grad():
+                                outputs = model.generate(
+                                    **cpu_inputs,
+                                    output_audio=True,
+                                    max_new_tokens=min(max_tokens, 2048),  # Conservative for CPU
+                                    temperature=temperature,
+                                    do_sample=True,
+                                    use_cache=False
+                                )
+                            
+                            # Move model back to original device (in case needed for future)
+                            model.to(original_device)
+                            
+                            logger.info("✅ Generation successful using CPU fallback for RTX 5090")
+                            
+                        except Exception as cpu_error:
+                            logger.error(f"❌ CPU fallback also failed: {cpu_error}")
+                            raise RuntimeError(f"RTX 5090 CUDA generation failed: {cuda_error}. CPU fallback also failed: {cpu_error}")
                     
-                    # Retry with more conservative settings
-                    try:
-                        with torch.no_grad():
-                            outputs = model.generate(
-                                **inputs, 
-                                output_audio=True,
-                                max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
-                                temperature=temperature,
-                                do_sample=True,
-                                use_cache=False  # Reduce memory usage
-                            )
-                        logger.info("✅ Generation successful after CUDA recovery")
-                    except Exception as retry_error:
-                        logger.error(f"❌ CUDA recovery failed: {retry_error}")
-                        raise RuntimeError(f"CUDA generation failed: {cuda_error}. Recovery attempt also failed: {retry_error}")
+                    else:
+                        # Standard CUDA error recovery
+                        logger.info("🔄 Attempting CUDA recovery...")
+                        
+                        # Clear cache and retry with lower memory usage
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        # Retry with more conservative settings
+                        try:
+                            with torch.no_grad():
+                                outputs = model.generate(
+                                    **inputs, 
+                                    output_audio=True,
+                                    max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
+                                    temperature=temperature,
+                                    do_sample=True,
+                                    use_cache=False  # Reduce memory usage
+                                )
+                            logger.info("✅ Generation successful after CUDA recovery")
+                        except Exception as retry_error:
+                            logger.error(f"❌ CUDA recovery failed: {retry_error}")
+                            raise RuntimeError(f"CUDA generation failed: {cuda_error}. Recovery attempt also failed: {retry_error}")
                 else:
                     raise cuda_error
             
