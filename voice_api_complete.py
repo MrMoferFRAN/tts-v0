@@ -708,10 +708,10 @@ class CSMVoiceManager:
             gen_cfg.depth_decoder_temperature = depth_decoder_temperature
             
             gen_kwargs = dict(
-                output_audio=True,
-                max_new_tokens=max_tokens,
-                generation_config=gen_cfg,
-            )
+                 output_audio=True,
+                 max_new_tokens=max_tokens,
+                 generation_config=gen_cfg,
+             )
 
             # -------------------------------------------------
             # 2) Segmentar texto muy largo para evitar drift
@@ -789,7 +789,7 @@ class CSMVoiceManager:
                         with torch.no_grad():
                             outputs = model.generate(
                                 **cpu_inputs,
-                                **generation_kwargs,
+                                **gen_kwargs,
                                 max_new_tokens=min(max_tokens, 1536),  # Conservative for CPU
                                 use_cache=False
                             )
@@ -805,7 +805,7 @@ class CSMVoiceManager:
                             
                             outputs = model.generate(
                                 **inputs,
-                                **generation_kwargs
+                                **gen_kwargs
                             )
                         
                 except RuntimeError as cuda_error:
@@ -845,7 +845,7 @@ class CSMVoiceManager:
                                 with torch.no_grad():
                                     outputs = model.generate(
                                         **cpu_inputs,
-                                        **generation_kwargs,
+                                        **gen_kwargs,
                                         max_new_tokens=min(max_tokens, 2048),  # Conservative for CPU
                                         use_cache=False
                                     )
@@ -873,7 +873,7 @@ class CSMVoiceManager:
                                 with torch.no_grad():
                                     outputs = model.generate(
                                         **inputs,
-                                        **generation_kwargs,
+                                        **gen_kwargs,
                                         max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
                                         use_cache=False  # Reduce memory usage
                                     )
