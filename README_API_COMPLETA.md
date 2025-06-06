@@ -155,7 +155,7 @@ curl -X POST 'http://localhost:7860/clone' \
 ## 📁 Estructura del Proyecto
 
 ```
-/workspace/runttspod/
+/workspacetts-v0/
 ├── voice_api_complete.py      # API principal completa
 ├── quick_start.py            # API básica (legacy)
 ├── models/
@@ -213,7 +213,7 @@ curl -X POST 'http://localhost:7860/clone' \
   "profiles": [
     {
       "name": "voices",
-      "audio_path": "/workspace/runttspod/voices/fran-fem/audio.mp3",
+      "audio_path": "/workspacetts-v0/voices/fran-fem/audio.mp3",
       "transcription": "Transcripción del audio",
       "language": "es",
       "quality_score": 1.0,

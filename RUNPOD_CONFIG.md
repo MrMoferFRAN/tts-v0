@@ -25,7 +25,7 @@ runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 ### **Container Start Command (recomendado)**
 ```bash
-bash -c "cd /workspace && (git clone https://github.com/MrMoferFRAN/runttspod.git || (cd runttspod && git pull origin main)) && cd runttspod && chmod +x startup.sh && ./startup.sh"
+bash -c "cd /workspace && (git clone https://github.com/MrMoferFRANtts-v0.git || (cd runttspod && git pull origin main)) && cd runttspod && chmod +x startup.sh && ./startup.sh"
 ```
 
 ## 🎯 Especificaciones GPU Recomendadas
@@ -52,7 +52,7 @@ bash -c "cd /workspace && (git clone https://github.com/MrMoferFRAN/runttspod.gi
 
 ### **1. Clone automático del repositorio**
 ```bash
-git clone https://github.com/MrMoferFRAN/runttspod.git
+git clone https://github.com/MrMoferFRANtts-v0.git
 ```
 
 ### **2. Instalación automática de dependencias**
@@ -63,7 +63,7 @@ git clone https://github.com/MrMoferFRAN/runttspod.git
 
 ### **3. Descarga automática del modelo CSM-1B**
 - Modelo: `sesame/csm-1b` (~6GB)
-- Ubicación: `/workspace/runttspod/models/sesame-csm-1b/`
+- Ubicación: `/workspacetts-v0/models/sesame-csm-1b/`
 
 ### **4. Inicio automático de la API**
 - Puerto: `7860`
@@ -118,7 +118,7 @@ curl -X POST 'http://[POD_IP]:7860/clone-voice' \
 ### **Caching**
 - Modelo se carga una vez al iniciar
 - Audio profiles se mantienen en memoria
-- Outputs se cachean en `/workspace/runttspod/outputs/`
+- Outputs se cachean en `/workspacetts-v0/outputs/`
 
 ## 🐛 Troubleshooting
 
@@ -136,7 +136,7 @@ curl -X POST 'http://[POD_IP]:7860/clone-voice' \
 
 ### **API no responde en puerto 7860**
 - **Verificar**: `curl http://localhost:7860/health`
-- **Log**: Revisar `/workspace/runttspod/logs/startup_[fecha].log`
+- **Log**: Revisar `/workspacetts-v0/logs/startup_[fecha].log`
 
 ## 💰 Estimación de Costos
 
@@ -164,7 +164,7 @@ curl -X POST 'http://[POD_IP]:7860/upload-voice' \
      -F 'audio_file=@mi_audio.wav'
 
 # Método 2: Manual
-# Copiar archivos a /workspace/runttspod/voices/
+# Copiar archivos a /workspacetts-v0/voices/
 # - mi_voz.wav (audio)
 # - mi_voz.txt (transcripción)
 ```
@@ -173,8 +173,8 @@ curl -X POST 'http://[POD_IP]:7860/upload-voice' \
 
 ### **Logs del sistema**
 ```bash
-tail -f /workspace/runttspod/logs/startup_*.log
-tail -f /workspace/runttspod/logs/voice_api.log
+tail -f /workspacetts-v0/logs/startup_*.log
+tail -f /workspacetts-v0/logs/voice_api.log
 ```
 
 ### **Uso de GPU**
@@ -193,7 +193,7 @@ curl http://localhost:7860/health | jq
 Container Image: runpod/pytorch:2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 RunPod Secret: RUNPOD_SECRET_HF_TOKEN=tu_token_aqui (RECOMENDADO)
 Environment Variables: HF_TOKEN=tu_token_aqui (alternativa)
-Container Start Command: bash -c "cd /workspace && (git clone https://github.com/MrMoferFRAN/runttspod.git || (cd runttspod && git pull origin main)) && cd runttspod && chmod +x startup.sh && ./startup.sh"
+Container Start Command: bash -c "cd /workspace && (git clone https://github.com/MrMoferFRANtts-v0.git || (cd runttspod && git pull origin main)) && cd runttspod && chmod +x startup.sh && ./startup.sh"
 Container Disk: 100GB
 GPU: RTX 4090 24GB (mínimo)
 ``` 

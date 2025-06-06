@@ -118,17 +118,18 @@ echo "✅ Dependencias de audio instaladas y verificadas"
 echo "🔍 4. Descargando modelo CSM-1B Turbo INT8..."
 TURBO_DIR="./models/csm-1b-turbo"
 
-# Verificar si ya existe el modelo turbo
-if [ -f "$TURBO_DIR/model.safetensors" ]; then
+# Verificar si ya existe el modelo turbo completo
+if [ -f "$TURBO_DIR/model.safetensors" ] && [ -f "$TURBO_DIR/transformers-00001-of-00002.safetensors" ] && [ -f "$TURBO_DIR/transformers-00002-of-00002.safetensors" ]; then
     model_size=$(du -sh "$TURBO_DIR/model.safetensors" | cut -f1)
-    echo "✅ Modelo CSM-1B Turbo encontrado: $model_size"
+    echo "✅ Modelo CSM-1B Turbo completo encontrado: $model_size"
 else
     echo "🔄 Descargando modelo CSM-1B Turbo desde lunahr/csm-1b-safetensors-quants..."
     
     # Crear directorio models si no existe
     mkdir -p "$TURBO_DIR"
     
-    # Descargar solo el archivo model_uint8.safetensors
+    # 4.1. Descargar modelo uint8 cuantizado
+    echo "📥 4.1. Descargando modelo uint8 cuantizado..."
     python - <<'PY'
 import os
 from huggingface_hub import hf_hub_download
@@ -155,20 +156,116 @@ PY
         echo "❌ Error descargando modelo turbo"
         exit 1
     fi
-fi
+    
+    # 4.2. Copiar como model.safetensors
+    echo "🔍 4.2. Copiando modelo como model.safetensors..."
+    if [ -f "$TURBO_DIR/model_uint8.safetensors" ]; then
+        cp "$TURBO_DIR/model_uint8.safetensors" "$TURBO_DIR/model.safetensors"
+        echo "✅ model_uint8.safetensors copiado como model.safetensors"
+    else
+        echo "❌ No se encontró model_uint8.safetensors"
+        exit 1
+    fi
+    
+    # 4.3. Descargar archivos de configuración desde sesame/csm-1b
+    echo "📥 4.3. Descargando archivos de configuración..."
+    python - <<'PY'
+import os
+from huggingface_hub import hf_hub_download
 
-# 4.1.b AJUSTAR NOMBRE DEL PESO INT8 ────────────────────────────────────────
-echo "🔍 4.1.b Ajustando nombre del peso INT8…"
+print('📥 Descargando archivos de configuración CSM...')
+print('🔗 Repo: sesame/csm-1b')
+print('📁 Destino: models/csm-1b-turbo')
 
-if [ -f "$TURBO_DIR/model_uint8.safetensors" ] && [ ! -f "$TURBO_DIR/model.safetensors" ]; then
-    # Copiar model_uint8.safetensors como model.safetensors
-    cp "$TURBO_DIR/model_uint8.safetensors" "$TURBO_DIR/model.safetensors"
-    echo "✅ model_uint8.safetensors copiado como model.safetensors"
-elif [ -f "$TURBO_DIR/model.safetensors" ]; then
-    echo "✅ model.safetensors ya presente"
-else
-    echo "❌ No se encontró model_uint8.safetensors"
-    exit 1
+config_files = [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    'preprocessor_config.json',
+    'special_tokens_map.json',
+    'generation_config.json',
+    'chat_template.jinja'
+]
+
+for filename in config_files:
+    try:
+        print(f'📥 Descargando {filename}...')
+        downloaded_file = hf_hub_download(
+            repo_id='sesame/csm-1b',
+            filename=filename,
+            local_dir='models/csm-1b-turbo',
+            token=os.environ.get('HF_TOKEN')
+        )
+        print(f'✅ {filename} descargado')
+    except Exception as e:
+        print(f'❌ Error descargando {filename}: {e}')
+        exit(1)
+
+print('✅ Archivos de configuración descargados')
+PY
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error descargando archivos de configuración"
+        exit 1
+    fi
+    
+    # 4.4. Descargar índice de transformers
+    echo "📥 4.4. Descargando índice de transformers..."
+    python - <<'PY'
+import os
+from huggingface_hub import hf_hub_download
+
+print('📥 Descargando transformers.safetensors.index.json...')
+downloaded_file = hf_hub_download(
+    repo_id='sesame/csm-1b',
+    filename='transformers.safetensors.index.json',
+    local_dir='models/csm-1b-turbo',
+    token=os.environ.get('HF_TOKEN')
+)
+print('✅ transformers.safetensors.index.json descargado')
+PY
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error descargando índice de transformers"
+        exit 1
+    fi
+    
+    # 4.5. Descargar archivos transformers
+    echo "📥 4.5. Descargando archivos transformers..."
+    python - <<'PY'
+import os
+from huggingface_hub import hf_hub_download
+
+print('📥 Descargando archivos transformers...')
+print('🔗 Repo: sesame/csm-1b')
+print('📁 Destino: models/csm-1b-turbo')
+
+transformer_files = [
+    'transformers-00001-of-00002.safetensors',
+    'transformers-00002-of-00002.safetensors'
+]
+
+for filename in transformer_files:
+    try:
+        print(f'📥 Descargando {filename}...')
+        downloaded_file = hf_hub_download(
+            repo_id='sesame/csm-1b',
+            filename=filename,
+            local_dir='models/csm-1b-turbo',
+            token=os.environ.get('HF_TOKEN')
+        )
+        print(f'✅ {filename} descargado')
+    except Exception as e:
+        print(f'❌ Error descargando {filename}: {e}')
+        exit(1)
+
+print('✅ Archivos transformers descargados')
+PY
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error descargando archivos transformers"
+        exit 1
+    fi
 fi
 
 # Mostrar información del modelo turbo
@@ -176,44 +273,32 @@ if [ -f "$TURBO_DIR/model.safetensors" ]; then
     model_size=$(du -sh "$TURBO_DIR/model.safetensors" | cut -f1)
     echo "📦 Tamaño del modelo turbo: $model_size"
 fi
-# 4.2  ─── Copiar metadatos ligeros del repo vanilla ───────────────
-echo "🔍 Descargando metadatos ligeros de sesame/csm-1b ..."
-python - <<'PY'
-import os, sys, json, textwrap
-from huggingface_hub import hf_hub_download
 
-repo_id      = "sesame/csm-1b"
-dst_dir      = "models/csm-1b-turbo"
-token        = os.environ.get("HF_TOKEN")
-need_files   = [
-    "config.json",
-    "generation_config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "chat_template.jinja",
-]
+# Verificar que todos los archivos estén presentes
+echo "🔍 Verificando archivos del modelo turbo..."
+required_files=(
+    "model.safetensors"
+    "config.json"
+    "tokenizer.json"
+    "transformers.safetensors.index.json"
+    "transformers-00001-of-00002.safetensors"
+    "transformers-00002-of-00002.safetensors"
+)
 
-for fname in need_files:
-    fpath = os.path.join(dst_dir, fname)
-    if os.path.exists(fpath):
-        print(f"   • {fname:25s} ✅ ya existe")
-        continue
-    try:
-        hf_hub_download(
-            repo_id=repo_id,
-            filename=fname,
-            local_dir=dst_dir,
-            local_dir_use_symlinks=False,
-            token=token,
-        )
-        print(f"   • {fname:25s} ✅ descargado")
-    except Exception as e:
-        print(f"   • {fname:25s} ❌ {e}")
-        sys.exit(1)
+missing_files=()
+for file in "${required_files[@]}"; do
+    if [ ! -f "$TURBO_DIR/$file" ]; then
+        missing_files+=("$file")
+    fi
+done
 
-print("✅ Todos los metadatos listos en", dst_dir)
-PY
+if [ ${#missing_files[@]} -eq 0 ]; then
+    echo "✅ Todos los archivos del modelo turbo están presentes"
+else
+    echo "❌ Archivos faltantes: ${missing_files[*]}"
+    exit 1
+fi
+
 
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."

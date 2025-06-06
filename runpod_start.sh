@@ -36,7 +36,7 @@ if [ -d "runttspod" ]; then
     git pull origin main || echo "⚠️ No se pudo actualizar (usando versión local)"
 else
     echo "📥 Clonando repositorio desde GitHub..."
-    git clone https://github.com/MrMoferFRAN/runttspod.git
+    git clone https://github.com/MrMoferFRANtts-v0.git
     cd runttspod
 fi
 

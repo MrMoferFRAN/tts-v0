@@ -30,7 +30,7 @@ def start_voice_api():
     print("🎤 Iniciando Voice Cloning API...")
     
     # Cambiar al directorio correcto
-    os.chdir("/workspace/runttspod")
+    os.chdir("/workspacetts-v0")
     
     # Verificar que quick_start.py existe
     if not Path("quick_start.py").exists():
@@ -40,7 +40,7 @@ def start_voice_api():
     try:
         # Configurar entorno
         env = os.environ.copy()
-        env["PYTHONPATH"] = "/workspace/runttspod:/workspace/runttspod/models/csm"
+        env["PYTHONPATH"] = "/workspacetts-v0:/workspacetts-v0/models/csm"
         env["NO_TORCH_COMPILE"] = "1"
         
         # Iniciar proceso

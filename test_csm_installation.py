@@ -49,7 +49,7 @@ def test_csm_module():
     print("\n🔍 Verificando módulo CSM...")
     
     # Cambiar al directorio CSM
-    csm_dir = "/workspace/runttspod/models/csm"
+    csm_dir = "/workspacetts-v0/models/csm"
     if not os.path.exists(csm_dir):
         print(f"❌ Directorio CSM no encontrado: {csm_dir}")
         return False
@@ -79,7 +79,7 @@ def test_model_file():
     """Verifica el archivo del modelo"""
     print("\n🔍 Verificando archivo del modelo...")
     
-    model_path = "/workspace/runttspod/models/csm-1b.safetensors"
+    model_path = "/workspacetts-v0/models/csm-1b.safetensors"
     if os.path.exists(model_path):
         size_gb = os.path.getsize(model_path) / (1024**3)
         print(f"✅ Modelo CSM encontrado: {size_gb:.1f} GB")
@@ -92,7 +92,7 @@ def test_dataset():
     """Verifica el dataset Elise"""
     print("\n🔍 Verificando dataset Elise...")
     
-    dataset_path = "/workspace/runttspod/datasets/csm-1b-elise"
+    dataset_path = "/workspacetts-v0/datasets/csm-1b-elise"
     if os.path.exists(dataset_path):
         print(f"✅ Dataset Elise encontrado: {dataset_path}")
         return True
@@ -138,7 +138,7 @@ def main():
     if all_passed:
         print("🎉 ¡INSTALACIÓN COMPLETA Y FUNCIONAL!")
         print("💡 Para usar CSM:")
-        print("   cd /workspace/runttspod/models/csm")
+        print("   cd /workspacetts-v0/models/csm")
         print("   python run_csm.py")
     else:
         print("⚠️  INSTALACIÓN INCOMPLETA")

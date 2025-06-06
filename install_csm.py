@@ -35,7 +35,7 @@ def install_csm():
     print(f"💾 Espacio en disco: {result.stdout.strip()}")
     
     # 1. Verificar modelo descargado
-    model_path = "/workspace/runttspod/models/csm-1b.safetensors"
+    model_path = "/workspacetts-v0/models/csm-1b.safetensors"
     if os.path.exists(model_path):
         size_gb = os.path.getsize(model_path) / (1024**3)
         print(f"✅ Modelo CSM encontrado: {size_gb:.1f} GB")
@@ -44,7 +44,7 @@ def install_csm():
         return False
     
     # 2. Verificar repositorio CSM
-    csm_repo = "/workspace/runttspod/models/csm"
+    csm_repo = "/workspacetts-v0/models/csm"
     if os.path.exists(csm_repo):
         print("✅ Repositorio CSM encontrado")
     else:
@@ -52,7 +52,7 @@ def install_csm():
         return False
     
     # 3. Verificar dataset Elise
-    elise_path = "/workspace/runttspod/datasets/csm-1b-elise"
+    elise_path = "/workspacetts-v0/datasets/csm-1b-elise"
     if os.path.exists(elise_path):
         print("✅ Dataset Elise encontrado")
     else:
@@ -99,7 +99,7 @@ def install_csm():
     print(f"🔸 Código fuente: {csm_repo}")
     print(f"🔸 Dataset Elise: {elise_path}")
     print("\n🔸 Para usar CSM:")
-    print("   cd /workspace/runttspod/models/csm")
+    print("   cd /workspacetts-v0/models/csm")
     print("   python run_csm.py")
     print("\n🔸 Para desarrollo:")
     print("   from generator import load_csm_1b")
@@ -110,7 +110,7 @@ def install_csm():
 # Ejemplo de uso de CSM
 import sys
 import os
-sys.path.append('/workspace/runttspod/models/csm')
+sys.path.append('/workspacetts-v0/models/csm')
 
 try:
     from generator import load_csm_1b
@@ -136,7 +136,7 @@ except Exception as e:
     print("🔧 Verifica que todas las dependencias estén instaladas correctamente")
 """
     
-    with open("/workspace/runttspod/test_csm.py", "w") as f:
+    with open("/workspacetts-v0/test_csm.py", "w") as f:
         f.write(example_script)
     print("✅ Script de ejemplo creado: test_csm.py")
     

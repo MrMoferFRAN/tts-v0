@@ -13,7 +13,7 @@
 
 ### **1. INSTALACIÓN AUTOMÁTICA (RECOMENDADO)**
 ```bash
-cd /workspace/runttspod
+cd /workspacetts-v0
 ./startup.sh
 ```
 
@@ -38,7 +38,7 @@ pip install peft>=0.4.0 fastapi uvicorn python-multipart aiofiles
 
 ### **3. ESTRUCTURA CORRECTA**
 ```
-/workspace/runttspod/
+/workspacetts-v0/
 ├── voice_cloning/          # 🎤 Sistema principal de clonación
 │   ├── __init__.py
 │   ├── voice_clone.py     # Clase VoiceCloner

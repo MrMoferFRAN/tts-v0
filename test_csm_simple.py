@@ -70,7 +70,7 @@ def test_csm_import():
     
     try:
         # Try importing without the problematic voice_cloning
-        os.environ['PYTHONPATH'] = '/workspace/runttspod'
+        os.environ['PYTHONPATH'] = '/workspacetts-v0'
         
         from transformers import AutoProcessor
         print("✅ AutoProcessor imported")

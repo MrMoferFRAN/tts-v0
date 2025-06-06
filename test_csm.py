@@ -2,7 +2,7 @@
 # Ejemplo de uso de CSM
 import sys
 import os
-sys.path.append('/workspace/runttspod/models/csm')
+sys.path.append('/workspacetts-v0/models/csm')
 
 try:
     from generator import load_csm_1b

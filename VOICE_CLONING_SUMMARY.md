@@ -33,7 +33,7 @@ VOICE CLONING SYSTEM
 
 ### **1. AUTOMÁTICA (RECOMENDADA)**
 ```bash
-cd /workspace/runttspod
+cd /workspacetts-v0
 ./startup.sh    # Hace todo automáticamente
 ```
 

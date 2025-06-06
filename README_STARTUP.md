@@ -6,7 +6,7 @@
 **Para primera vez o instalación desde cero:**
 
 ```bash
-cd /workspace/runttspod
+cd /workspacetts-v0
 ./startup.sh
 ```
 
@@ -23,7 +23,7 @@ cd /workspace/runttspod
 **Para cuando ya tienes todo instalado:**
 
 ```bash
-cd /workspace/runttspod
+cd /workspacetts-v0
 ./quick_api_start.sh
 ```
 
@@ -48,8 +48,8 @@ Una vez iniciada cualquiera de las opciones:
 # GPU: NVIDIA A100 80GB PCIe (85.1 GB VRAM)
 # PyTorch: 2.4.0+cu121 (Compatible CUDA 12.1)
 # CSM: Instalado en modo editable
-# Modelo: /workspace/runttspod/models/csm-1b.safetensors (5.8 GB)
-# Dataset: /workspace/runttspod/datasets/csm-1b-elise/
+# Modelo: /workspacetts-v0/models/csm-1b.safetensors (5.8 GB)
+# Dataset: /workspacetts-v0/datasets/csm-1b-elise/
 ```
 
 ## 🎯 **COMANDOS DE VERIFICACIÓN**
@@ -122,7 +122,7 @@ curl -X POST 'http://localhost:7860/upload-voice' \
 ## 📁 **ESTRUCTURA DEL PROYECTO**
 
 ```
-/workspace/runttspod/
+/workspacetts-v0/
 ├── startup.sh                 # 🔧 Instalación completa
 ├── quick_api_start.sh         # ⚡ Inicio rápido
 ├── quick_start.py             # 🎤 API de Voice Cloning

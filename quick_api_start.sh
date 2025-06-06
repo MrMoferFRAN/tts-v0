@@ -4,14 +4,14 @@
 echo "🎯 QUICK START - VOICE CLONING API"
 echo "============================================"
 
-cd /workspace/runttspod
+cd /workspacetts-v0
 
 # Verificar que voice_cloning está instalado
 echo "🔍 Verificando instalación voice_cloning..."
 python -c "
 import sys
-sys.path.insert(0, '/workspace/runttspod')
-sys.path.insert(0, '/workspace/runttspod/voice_cloning')
+sys.path.insert(0, '/workspacetts-v0')
+sys.path.insert(0, '/workspacetts-v0/voice_cloning')
 
 try:
     from voice_cloning import VoiceCloner
@@ -39,7 +39,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Configurar entorno
-export PYTHONPATH="/workspace/runttspod:/workspace/runttspod/voice_cloning:$PYTHONPATH"
+export PYTHONPATH="/workspacetts-v0:/workspacetts-v0/voice_cloning:$PYTHONPATH"
 export NO_TORCH_COMPILE=1
 export HF_TOKEN=|==>REMOVED
 export OMP_NUM_THREADS=4
