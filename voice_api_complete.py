@@ -41,7 +41,7 @@ def setup_cuda_compatibility():
     os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:512,expandable_segments:True')
     
     # Optimize for different compute capabilities
-    # RTX 4090/6000 Ada: 8.9, RTX 5090: 9.0
+    # RTX 4090/6000 Ada: 8.9, RTX 5090: 12.0 (sm_120)
     os.environ.setdefault('TORCH_CUDNN_V8_API_ENABLED', '1')
     
     # Compatibility flags
@@ -50,28 +50,49 @@ def setup_cuda_compatibility():
     os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
     
     if torch.cuda.is_available():
-        device_props = torch.cuda.get_device_properties(0)
-        compute_capability = f"{device_props.major}.{device_props.minor}"
-        
-        logger.info(f"🖥️ GPU: {device_props.name}")
-        logger.info(f"🔧 Compute Capability: {compute_capability}")
-        logger.info(f"💾 Memory: {device_props.total_memory / 1024**3:.1f} GB")
-        
-        # Specific optimizations for RTX 5090 (compute capability 9.0)
-        if device_props.major >= 9:
-            logger.info("🚀 RTX 5090 detected - applying advanced optimizations")
-            # Enable advanced features for newer architectures
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+        try:
+            device_props = torch.cuda.get_device_properties(0)
+            compute_capability = f"{device_props.major}.{device_props.minor}"
             
-        # Common optimizations for all RTX series
-        if device_props.major >= 8:
-            logger.info("⚡ RTX series GPU detected - enabling TensorFloat-32")
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+            print(f"🖥️ GPU: {device_props.name}")
+            print(f"🔧 Compute Capability: {compute_capability}")
+            print(f"💾 Memory: {device_props.total_memory / 1024**3:.1f} GB")
+            
+            # Check for RTX 5090 compatibility issue
+            if device_props.major >= 12:  # RTX 5090 has sm_120
+                print("🚨 RTX 5090 detected with PyTorch compatibility issue!")
+                print("⚠️ Current PyTorch doesn't support sm_120. Applying workarounds...")
+                
+                # Set environment variables to force CPU fallback for problematic operations
+                os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Force CPU mode temporarily
+                print("🔄 Forcing CPU mode for RTX 5090 compatibility")
+                return False  # Indicate CUDA should not be used
+                
+            # Specific optimizations for supported RTX series
+            elif device_props.major >= 9:  # RTX 4090 series with sm_90 support
+                print("🚀 RTX 4090+ series detected - applying advanced optimizations")
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                
+            # Common optimizations for all RTX series
+            elif device_props.major >= 8:
+                print("⚡ RTX series GPU detected - enabling TensorFloat-32")
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                
+            return True  # CUDA can be used
+            
+        except Exception as e:
+            print(f"⚠️ GPU detection failed: {e}")
+            print("🔄 Falling back to CPU mode")
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''
+            return False
+    else:
+        print("💻 No CUDA available, using CPU mode")
+        return False
 
 # Setup CUDA compatibility before importing other modules
-setup_cuda_compatibility()
+cuda_available = setup_cuda_compatibility()
 
 # Fix for torch.compiler compatibility issues
 # Some PyTorch versions don't have torch.compiler.is_compiling
@@ -123,7 +144,15 @@ class CSMVoiceManager:
         self.model_path = model_path
         self.turbo_model_path = turbo_model_path
         self.voices_dir = Path(voices_dir)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Use global cuda_available variable to determine device
+        global cuda_available
+        self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
+        
+        if not cuda_available and torch.cuda.is_available():
+            logger.info("⚠️ CUDA available but incompatible GPU detected - using CPU mode")
+        elif not torch.cuda.is_available():
+            logger.info("💻 CUDA not available - using CPU mode")
         
         # Modelos y procesadores
         self.model = None
@@ -176,37 +205,48 @@ class CSMVoiceManager:
                 "trust_remote_code": True
             }
             
-            if torch.cuda.is_available():
-                # Get GPU info for optimization
-                device_props = torch.cuda.get_device_properties(0)
-                compute_capability = f"{device_props.major}.{device_props.minor}"
-                
-                # Optimize loading based on GPU architecture
-                if device_props.major >= 9:  # RTX 5090 and newer
-                    logger.info("🚀 RTX 5090+ detected - using advanced loading")
+            if self.device == "cuda" and torch.cuda.is_available():
+                try:
+                    # Get GPU info for optimization
+                    device_props = torch.cuda.get_device_properties(0)
+                    compute_capability = f"{device_props.major}.{device_props.minor}"
+                    
+                    # Optimize loading based on GPU architecture
+                    if device_props.major >= 9:  # RTX 4090 series with sm_90 support
+                        logger.info("🚀 RTX 4090+ series detected - using advanced loading")
+                        model_kwargs.update({
+                            "device_map": "auto",
+                            "torch_dtype": torch.float16,  # More conservative for compatibility
+                        })
+                    elif device_props.major >= 8:  # RTX 4090, 6000 Ada
+                        logger.info("⚡ RTX 4090/6000 Ada detected - using optimized loading")
+                        model_kwargs.update({
+                            "device_map": self.device,
+                            "torch_dtype": torch.float16,  # Good balance for 8.x series
+                        })
+                    else:  # Older GPUs
+                        logger.info("🔧 Legacy GPU detected - using compatible loading")
+                        model_kwargs.update({
+                            "device_map": self.device,
+                            "torch_dtype": torch.float32,  # Maximum compatibility
+                        })
+                    
+                    # Remove None values
+                    model_kwargs = {k: v for k, v in model_kwargs.items() if v is not None}
+                    
+                except Exception as gpu_error:
+                    logger.warning(f"⚠️ GPU detection failed: {gpu_error}")
+                    logger.info("🔄 Falling back to CPU mode")
+                    # Force CPU fallback
+                    self.device = "cpu"
                     model_kwargs.update({
-                        "device_map": "auto",
-                        "torch_dtype": torch.bfloat16,  # Better for newer architectures
-                        "attn_implementation": "flash_attention_2" if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else None
+                        "torch_dtype": torch.float32,
+                        "device_map": "cpu"
                     })
-                elif device_props.major >= 8:  # RTX 4090, 6000 Ada
-                    logger.info("⚡ RTX 4090/6000 Ada detected - using optimized loading")
-                    model_kwargs.update({
-                        "device_map": self.device,
-                        "torch_dtype": torch.float16,  # Good balance for 8.x series
-                    })
-                else:  # Older GPUs
-                    logger.info("🔧 Legacy GPU detected - using compatible loading")
-                    model_kwargs.update({
-                        "device_map": self.device,
-                        "torch_dtype": torch.float32,  # Maximum compatibility
-                    })
-                
-                # Remove None values
-                model_kwargs = {k: v for k, v in model_kwargs.items() if v is not None}
                 
             else:
-                # CPU fallback
+                # CPU mode (either forced or no CUDA)
+                logger.info("💻 Using CPU mode for model loading")
                 model_kwargs.update({
                     "torch_dtype": torch.float32,
                     "device_map": "cpu"
