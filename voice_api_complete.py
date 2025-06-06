@@ -35,13 +35,14 @@ from pydantic import BaseModel
 # Valores pensados para español neutro con buena claridad en CSM-1B.
 GENERATION_DEFAULTS = {
     "do_sample": True,
-    "temperature": 0.7,
+    "temperature": 0.8,  # Volver al valor original más conservador
     "top_p": 0.9,
     "top_k": 50,
-    "repetition_penalty": 1.3,
+    "repetition_penalty": 1.0,  # Desactivado por defecto (1.0 = sin penalización)
     # Control del decodificador de profundidad (audio fines)
-    "depth_decoder_do_sample": False,
-    "depth_decoder_temperature": 0.5,
+    # Nota: estos parámetros pueden no ser soportados por CSM-1B
+    "depth_decoder_do_sample": True,  # Más conservador
+    "depth_decoder_temperature": 0.8,  # Más conservador
 }
 
 # Texto > ≈ 2048 tokens se corta en oraciones para evitar drift
@@ -62,8 +63,8 @@ def setup_cuda_compatibility():
     """Setup CUDA environment for maximum GPU compatibility"""
     
     # Essential CUDA environment variables for broad compatibility
-    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '0')  # Set to 1 only for debugging
-    os.environ.setdefault('TORCH_USE_CUDA_DSA', '0')    # Device-side assertions for debugging
+    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '1')  # Enable for better error debugging
+    os.environ.setdefault('TORCH_USE_CUDA_DSA', '1')    # Enable device-side assertions
     os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
     
     # Memory management for large models
@@ -74,7 +75,7 @@ def setup_cuda_compatibility():
     os.environ.setdefault('TORCH_CUDNN_V8_API_ENABLED', '1')
     
     # Compatibility flags
-    os.environ.setdefault('NO_TORCH_COMPILE', '0')  # Changed to allow torch.compile
+    os.environ.setdefault('NO_TORCH_COMPILE', '1')  # Disabled by default - use ENABLE_TORCH_COMPILE=1 to enable
     os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
     os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
     
@@ -375,7 +376,8 @@ class CSMVoiceManager:
             
             # Opcionalmente compilar el modelo para kernels optimizados:
             # PyTorch >= 2.1 hace graph capture + Triton; acelera ≈1.3-1.4 ×. 
-            if hasattr(torch, "compile") and not os.environ.get("NO_TORCH_COMPILE", "0") == "1":
+            # DESHABILITADO POR DEFECTO - puede causar problemas de compatibilidad
+            if hasattr(torch, "compile") and os.environ.get("ENABLE_TORCH_COMPILE", "0") == "1":
                 logger.info("🛠️  Compiling model with torch.compile() (max-autotune) ...")
                 try:
                     self.model = torch.compile(self.model, mode="max-autotune")
@@ -639,7 +641,8 @@ class CSMVoiceManager:
         depth_decoder_do_sample: bool = GENERATION_DEFAULTS["depth_decoder_do_sample"],
         depth_decoder_temperature: float = GENERATION_DEFAULTS["depth_decoder_temperature"],
         max_tokens: int = 4096,
-        turbo: bool = False
+        turbo: bool = False,
+        use_advanced_params: bool = True  # Flag para habilitar/deshabilitar parámetros avanzados
     ) -> np.ndarray:
         """Clona una voz usando una muestra específica con opción turbo"""
         try:
@@ -704,23 +707,52 @@ class CSMVoiceManager:
             # -------------------------------------------------
             # 1) Preparar kwargs de generación con control total
             # -------------------------------------------------
+            # Parámetros básicos siempre soportados
             generation_kwargs = dict(
                 output_audio=True,
                 max_new_tokens=max_tokens,
                 do_sample=True,
                 temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                depth_decoder_do_sample=depth_decoder_do_sample,
-                depth_decoder_temperature=depth_decoder_temperature,
             )
+            
+            # Añadir parámetros avanzados solo si están habilitados
+            # Algunos modelos CSM-1B pueden no soportar todos los parámetros
+            if use_advanced_params:
+                try:
+                    # Verificar si el modelo soporta estos parámetros
+                    model_config = model.config if hasattr(model, 'config') else None
+                    
+                    # Añadir parámetros avanzados con cuidado
+                    advanced_params = {}
+                    
+                    # Top-p y top-k son generalmente soportados
+                    advanced_params['top_p'] = top_p
+                    advanced_params['top_k'] = top_k
+                    
+                    # Estos parámetros pueden no ser soportados por CSM-1B
+                    # Los añadimos solo si no causan errores
+                    if hasattr(model, 'generation_config'):
+                        gen_config = model.generation_config
+                        # Solo añadir si el modelo los reconoce
+                        if hasattr(gen_config, 'repetition_penalty'):
+                            advanced_params['repetition_penalty'] = repetition_penalty
+                        if hasattr(gen_config, 'depth_decoder_do_sample'):
+                            advanced_params['depth_decoder_do_sample'] = depth_decoder_do_sample
+                            advanced_params['depth_decoder_temperature'] = depth_decoder_temperature
+                    
+                    generation_kwargs.update(advanced_params)
+                    logger.info(f"🎛️ Using advanced parameters: {list(advanced_params.keys())}")
+                    
+                except Exception as param_error:
+                    logger.warning(f"⚠️ Could not apply all advanced parameters: {param_error}")
+                    logger.info("🔄 Using basic generation parameters only")
             
             # -------------------------------------------------
             # 2) Segmentar texto muy largo para evitar drift
             # -------------------------------------------------
             chunks: List[str] = []
-            if max_tokens > MAX_TOKENS_PER_CHUNK:
+            # Solo segmentar si usamos parámetros avanzados y el texto es largo
+            if use_advanced_params and max_tokens > MAX_TOKENS_PER_CHUNK:
                 chunks = _split_sentences(text)
                 if len(chunks) > 1:
                     logger.info(f"✂️  Texto largo: dividido en {len(chunks)} oraciones")
@@ -812,11 +844,41 @@ class CSMVoiceManager:
                             )
                         
                 except RuntimeError as cuda_error:
-                    if "CUDA" in str(cuda_error):
+                    error_str = str(cuda_error)
+                    if "CUDA" in error_str:
                         logger.warning(f"⚠️ CUDA error during generation: {cuda_error}")
                         
+                        # Check for index out of bounds error specifically
+                        if "index out of bounds" in error_str or "idx_dim >= 0 && idx_dim < index_size" in error_str:
+                            logger.warning("🚨 Index out of bounds error detected!")
+                            logger.info("🔄 This is often caused by incompatible generation parameters")
+                            
+                            # If using advanced params, retry without them
+                            if use_advanced_params and len(generation_kwargs) > 4:
+                                logger.info("🔄 Retrying with basic parameters only...")
+                                # Reset to basic parameters
+                                generation_kwargs = dict(
+                                    output_audio=True,
+                                    max_new_tokens=min(max_tokens, 2048),
+                                    do_sample=True,
+                                    temperature=temperature,
+                                )
+                                
+                                # Retry generation
+                                with torch.no_grad():
+                                    if torch.cuda.is_available():
+                                        torch.cuda.empty_cache()
+                                    
+                                    outputs = model.generate(
+                                        **inputs,
+                                        **generation_kwargs
+                                    )
+                                logger.info("✅ Generation successful with basic parameters")
+                            else:
+                                raise RuntimeError(f"Index out of bounds error. Try reducing temperature or max_tokens. Original error: {cuda_error}")
+                        
                         # Check for RTX 5090 specific "no kernel image" error
-                        if "no kernel image is available for execution on the device" in str(cuda_error):
+                        elif "no kernel image is available for execution on the device" in error_str:
                             logger.warning("🚨 RTX 5090 kernel incompatibility detected!")
                             logger.info("🔄 Forcing CPU mode for this generation...")
                             
@@ -950,7 +1012,7 @@ def get_voice_manager():
 app = FastAPI(
     title="🎤 Voice Cloning API Complete - CSM-1B Turbo",
     description="API completa de clonación de voz con gestión avanzada de perfiles y modo turbo para inferencia ultrarrápida",
-    version="3.2.0"
+    version="3.2.1"
 )
 
 app.add_middleware(
@@ -1006,7 +1068,7 @@ async def home():
                 <div class="header">
                     <h1>🎤 Voice Cloning API Complete</h1>
                     <div class="subtitle">Powered by CSM-1B Turbo • Gestión Avanzada de Voces • Inferencia Ultrarrápida</div>
-                    <div class="version">v3.2.0 - Controladores Avanzados de Generación <span class="new-badge">NEW</span></div>
+                    <div class="version">v3.2.1 - Controladores Avanzados de Generación (Modo Compatibilidad)</div>
                 </div>
                 
                 <div class="section">
@@ -1086,11 +1148,12 @@ async def home():
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
                     </div>
                     <div class="endpoint">
-                        # Clonar voz (con control total)<br>
+                        # Clonar voz (con control total - EXPERIMENTAL)<br>
                         curl -X POST 'http://localhost:7860/clone' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto a sintetizar' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'temperature=0.7' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'use_advanced_params=true' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'top_p=0.9' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'top_k=50' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'repetition_penalty=1.3' \\<br>
@@ -1107,13 +1170,14 @@ async def home():
                 </div>
                 
                 <div class="section">
-                    <h2>🎛️ Parámetros de Control</h2>
-                    <p><strong>temperature</strong> (0.5-1.0): Creatividad vs Precisión. Default: 0.7</p>
+                    <h2>🎛️ Parámetros de Control <span style="background: #ffc107; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em;">EXPERIMENTAL</span></h2>
+                    <p><strong>⚠️ IMPORTANTE:</strong> Los parámetros avanzados están deshabilitados por defecto debido a problemas de compatibilidad con algunos modelos CSM-1B. Para usarlos, debes agregar <code>use_advanced_params=true</code>.</p>
+                    <p><strong>temperature</strong> (0.5-1.0): Creatividad vs Precisión. Default: 0.8</p>
                     <p><strong>top_p</strong> (0.8-0.95): Diversidad del vocabulario. Default: 0.9</p>
                     <p><strong>top_k</strong> (20-100): Limita opciones de tokens. Default: 50</p>
-                    <p><strong>repetition_penalty</strong> (1.0-2.0): Evita repeticiones. Default: 1.3</p>
-                    <p><strong>depth_decoder_do_sample</strong>: Determinismo en audio. Default: False</p>
-                    <p><strong>depth_decoder_temperature</strong>: Variación del audio. Default: 0.5</p>
+                    <p><strong>repetition_penalty</strong> (1.0-2.0): Evita repeticiones. Default: 1.0 (desactivado)</p>
+                    <p><strong>depth_decoder_do_sample</strong>: Determinismo en audio. Default: True</p>
+                    <p><strong>depth_decoder_temperature</strong>: Variación del audio. Default: 0.8</p>
                 </div>
             </div>
         </body>
@@ -1143,16 +1207,18 @@ async def health_check():
         
         return {
             "status": "healthy",
-            "version": "3.2.0",
+            "version": "3.2.1",
             "turbo_model": {
                 "loaded": manager.model is not None,
                 "processor_loaded": manager.processor is not None,
                 "path": manager.turbo_model_path,
                 "available": True,
                 "is_primary": True,
-                "optimizations": "FP16 + FlashAttention2 + torch.compile" if gpu_available else "CPU mode"
+                "optimizations": "FP16 + FlashAttention2" if gpu_available else "CPU mode",
+                "torch_compile": os.environ.get("ENABLE_TORCH_COMPILE", "0") == "1"
             },
             "generation_defaults": GENERATION_DEFAULTS,
+            "cuda_debug_mode": os.environ.get("CUDA_LAUNCH_BLOCKING", "0") == "1",
             "normal_model": {
                 "loaded": False,
                 "available": False,
@@ -1279,9 +1345,10 @@ async def clone_voice_endpoint(
     depth_decoder_temperature: float = Form(GENERATION_DEFAULTS["depth_decoder_temperature"], description="Depth decoder temperature"),
     max_tokens: int = Form(4096, description="Maximum tokens to generate (higher = longer audio, max ~25000 for 3min)"),
     turbo: bool = Form(False, description="Use turbo mode (optimized model for faster inference)"),
+    use_advanced_params: bool = Form(False, description="Use advanced generation parameters (may cause errors with some models)"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
-    """Clona una voz con el texto especificado - ahora con controladores avanzados"""
+    """Clona una voz con el texto especificado - ahora con controladores avanzados opcionales"""
     try:
         manager = get_voice_manager()
         
@@ -1296,20 +1363,38 @@ async def clone_voice_endpoint(
         if max_tokens < 64:
             raise HTTPException(status_code=400, detail="max_tokens must be at least 64 for meaningful audio generation")
         
-        # Generar audio
-        audio = manager.clone_voice(
-            text=text,
-            voice_id=voice_id,
-            sample_name=sample_name,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            depth_decoder_do_sample=depth_decoder_do_sample,
-            depth_decoder_temperature=depth_decoder_temperature,
-            max_tokens=max_tokens,
-            turbo=turbo
-        )
+        # Si hay problemas con parámetros avanzados, intentar sin ellos
+        try:
+            # Generar audio
+            audio = manager.clone_voice(
+                text=text,
+                voice_id=voice_id,
+                sample_name=sample_name,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                depth_decoder_do_sample=depth_decoder_do_sample,
+                depth_decoder_temperature=depth_decoder_temperature,
+                max_tokens=max_tokens,
+                turbo=turbo,
+                use_advanced_params=use_advanced_params
+            )
+        except RuntimeError as e:
+            if "CUDA" in str(e) and "assert" in str(e) and use_advanced_params:
+                logger.warning(f"⚠️ Advanced parameters caused CUDA error, retrying with basic parameters only")
+                # Reintentar sin parámetros avanzados
+                audio = manager.clone_voice(
+                    text=text,
+                    voice_id=voice_id,
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    turbo=turbo,
+                    use_advanced_params=False
+                )
+            else:
+                raise
         
         # Crear nombre de archivo único
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
@@ -1361,6 +1446,7 @@ async def clone_voice_extended(
     depth_decoder_do_sample: bool = Form(GENERATION_DEFAULTS["depth_decoder_do_sample"], description="Depth decoder sampling"),
     depth_decoder_temperature: float = Form(GENERATION_DEFAULTS["depth_decoder_temperature"], description="Depth decoder temperature"),
     turbo: bool = Form(True, description="Use turbo mode for faster generation"),
+    use_advanced_params: bool = Form(False, description="Use advanced generation parameters"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
     """Genera audio extendido dividiendo el texto en segmentos para mayor duración"""
@@ -1382,20 +1468,38 @@ async def clone_voice_extended(
         
         logger.info(f"🎯 Extended generation: target={target_duration}s, estimated_tokens={estimated_tokens}")
         
-        # Generar audio usando tokens estimados
-        audio = manager.clone_voice(
-            text=text,
-            voice_id=voice_id,
-            sample_name=sample_name,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            depth_decoder_do_sample=depth_decoder_do_sample,
-            depth_decoder_temperature=depth_decoder_temperature,
-            max_tokens=estimated_tokens,
-            turbo=turbo
-        )
+        # Intentar generar con parámetros avanzados primero
+        try:
+            # Generar audio usando tokens estimados
+            audio = manager.clone_voice(
+                text=text,
+                voice_id=voice_id,
+                sample_name=sample_name,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                depth_decoder_do_sample=depth_decoder_do_sample,
+                depth_decoder_temperature=depth_decoder_temperature,
+                max_tokens=estimated_tokens,
+                turbo=turbo,
+                use_advanced_params=use_advanced_params
+            )
+        except RuntimeError as e:
+            if "CUDA" in str(e) and "assert" in str(e) and use_advanced_params:
+                logger.warning(f"⚠️ Advanced parameters caused CUDA error, retrying with basic parameters only")
+                # Reintentar sin parámetros avanzados
+                audio = manager.clone_voice(
+                    text=text,
+                    voice_id=voice_id,
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=estimated_tokens,
+                    turbo=turbo,
+                    use_advanced_params=False
+                )
+            else:
+                raise
         
         # Calcular duración real
         actual_duration = len(audio) / 24000
@@ -1479,9 +1583,10 @@ if __name__ == "__main__":
         
         logger.info("🚀 Starting server on http://0.0.0.0:7860")
         logger.info("📖 API Documentation: http://0.0.0.0:7860/docs")
-        logger.info("🎛️ Default generation parameters:")
+        logger.info("🎛️ Default generation parameters (conservative mode):")
         for key, value in GENERATION_DEFAULTS.items():
             logger.info(f"  • {key}: {value}")
+        logger.info("⚠️ Advanced parameters are DISABLED by default. Use 'use_advanced_params=true' to enable (experimental).")
         
         # Iniciar servidor
         uvicorn.run(
