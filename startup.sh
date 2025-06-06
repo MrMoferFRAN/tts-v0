@@ -114,98 +114,58 @@ fi
 
 echo "✅ Dependencias de audio instaladas y verificadas"
 
-# 4. Verificar / descargar modelo CSM-1B (MÉTODO ROBUSTO CON HUGGINGFACE_HUB)
-echo "🔍 4. Verificando modelo CSM-1B..."
-MODEL_DIR="./models/sesame-csm-1b"
+# 4. Descargar modelo CSM-1B TURBO CUANTIZADO
+echo "🔍 4. Descargando modelo CSM-1B Turbo (INT8)..."
+TURBO_DIR="./models/csm-1b-turbo"
 
-# Verificar si ya existe el modelo completo
-if [ -f "$MODEL_DIR/config.json" ] && ls "$MODEL_DIR"/transformers-*-of-*.safetensors 1>/dev/null 2>&1; then
-    model_size=$(du -sh "$MODEL_DIR" | cut -f1)
-    echo "✅ Modelo CSM-1B encontrado: $model_size"
-    echo "📋 Archivos safetensors encontrados:"
-    ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
+# Verificar si ya existe el modelo turbo
+if [ -f "$TURBO_DIR/model_uint8.safetensors" ]; then
+    model_size=$(du -sh "$TURBO_DIR/model_uint8.safetensors" | cut -f1)
+    echo "✅ Modelo CSM-1B Turbo encontrado: $model_size"
 else
-    echo "🔄 Descargando modelo CSM-1B con huggingface_hub (método robusto)..."
-    
-    # Asegurar que huggingface_hub esté actualizado
-    pip install --no-cache-dir huggingface_hub --upgrade
+    echo "🔄 Descargando modelo CSM-1B Turbo desde lunahr/csm-1b-safetensors-quants..."
     
     # Crear directorio models si no existe
-    mkdir -p models
+    mkdir -p "$TURBO_DIR"
     
-    # Descargar usando huggingface_hub (más robusto que git-lfs)
+    # Descargar modelo turbo cuantizado
     python - <<'PY'
 import os
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 
-print("📥 Iniciando descarga del modelo CSM-1B...")
-print("🔗 Repo: sesame/csm-1b")
-print("📁 Destino: models/sesame-csm-1b")
+print("📥 Descargando modelo turbo cuantizado...")
+print("🔗 Repo: lunahr/csm-1b-safetensors-quants")
+print("📁 Archivo: model_uint8.safetensors")
+print("📁 Destino: models/csm-1b-turbo/")
 
 try:
-    snapshot_download(
-        repo_id="sesame/csm-1b",
-        local_dir="models/sesame-csm-1b",
-        local_dir_use_symlinks=False,  # copia real, sin symlinks → evita problemas en contenedores
-        token=os.environ.get("HF_TOKEN"),
-        resume_download=True  # continúa descarga si se interrumpió
+    downloaded_file = hf_hub_download(
+        repo_id="lunahr/csm-1b-safetensors-quants",
+        filename="model_uint8.safetensors",
+        local_dir="models/csm-1b-turbo",
+        local_dir_use_symlinks=False,
+        token=os.environ.get("HF_TOKEN")
     )
-    print("✅ Descarga completada exitosamente")
+    print(f"✅ Modelo turbo descargado: {downloaded_file}")
 except Exception as e:
-    print(f"❌ Error durante la descarga: {e}")
+    print(f"❌ Error descargando modelo turbo: {e}")
     exit(1)
 PY
 
     if [ $? -ne 0 ]; then
-        echo "❌ Error descargando modelo con huggingface_hub"
+        echo "❌ Error descargando modelo turbo"
+        exit 1
+    fi
+    
+    # Verificar descarga
+    if [ -f "$TURBO_DIR/model_uint8.safetensors" ]; then
+        model_size=$(du -sh "$TURBO_DIR/model_uint8.safetensors" | cut -f1)
+        echo "✅ Modelo turbo descargado exitosamente: $model_size"
+    else
+        echo "❌ Error: archivo no encontrado después de la descarga"
         exit 1
     fi
 fi
-
-# Verificación exhaustiva de archivos críticos
-echo "🔍 Verificando integridad del modelo..."
-
-# Verificar archivos safetensors específicos
-if ! ls "$MODEL_DIR"/transformers-*-of-*.safetensors 1>/dev/null 2>&1; then
-    echo "❌ No se han descargado los archivos safetensors"
-    echo "📋 Archivos esperados:"
-    echo "   - transformers-00001-of-00002.safetensors"
-    echo "   - transformers-00002-of-00002.safetensors"
-    echo "📁 Contenido actual del directorio:"
-    ls -la "$MODEL_DIR"/ || echo "Directorio no existe"
-    exit 1
-fi
-
-# Verificar archivos específicos mencionados en el error
-required_files=(
-    "$MODEL_DIR/transformers-00001-of-00002.safetensors"
-    "$MODEL_DIR/transformers-00002-of-00002.safetensors"
-    "$MODEL_DIR/config.json"
-    "$MODEL_DIR/tokenizer.json"
-)
-
-missing_files=()
-for file in "${required_files[@]}"; do
-    if [ ! -f "$file" ]; then
-        missing_files+=("$file")
-    fi
-done
-
-if [ ${#missing_files[@]} -gt 0 ]; then
-    echo "❌ Archivos faltantes:"
-    for file in "${missing_files[@]}"; do
-        echo "   - $file"
-    done
-    exit 1
-fi
-
-echo "✅ Todos los archivos críticos del modelo están presentes:"
-echo "📋 Archivos safetensors verificados:"
-ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
-
-# Mostrar tamaño total del modelo
-model_size=$(du -sh "$MODEL_DIR" | cut -f1)
-echo "📦 Tamaño total del modelo: $model_size"
 
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
@@ -357,38 +317,24 @@ import torch
 from transformers import CsmForConditionalGeneration, AutoProcessor
 import os
 
-print('🔍 Testing CSM system...')
+print('🔍 Testing CSM Turbo system...')
 try:
-    model_path = './models/sesame-csm-1b'
+    model_path = './models/csm-1b-turbo'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Verificar que los archivos específicos existen
-    safetensor_files = [
-        'transformers-00001-of-00002.safetensors',
-        'transformers-00002-of-00002.safetensors'
-    ]
+    # Verificar que el archivo turbo existe
+    turbo_file = 'model_uint8.safetensors'
     
-    print('🔍 Verificando archivos safetensors específicos...')
-    for file in safetensor_files:
-        file_path = os.path.join(model_path, file)
-        if os.path.exists(file_path):
-            size_mb = os.path.getsize(file_path) / (1024*1024)
-            print(f'✅ {file}: {size_mb:.1f} MB')
-        else:
-            print(f'❌ {file}: NO ENCONTRADO')
-            raise FileNotFoundError(f'Archivo crítico faltante: {file}')
+    print('🔍 Verificando archivo modelo turbo...')
+    file_path = os.path.join(model_path, turbo_file)
+    if os.path.exists(file_path):
+        size_mb = os.path.getsize(file_path) / (1024*1024)
+        print(f'✅ {turbo_file}: {size_mb:.1f} MB')
+    else:
+        print(f'❌ {turbo_file}: NO ENCONTRADO')
+        raise FileNotFoundError(f'Archivo crítico faltante: {turbo_file}')
     
-    print(f'📥 Loading processor from {model_path}...')
-    processor = AutoProcessor.from_pretrained(model_path)
-    
-    print(f'📥 Loading model on {device}...')
-    model = CsmForConditionalGeneration.from_pretrained(
-        model_path,
-        device_map=device,
-        torch_dtype=torch.float16 if device == 'cuda' else torch.float32
-    )
-    
-    print('✅ CSM system test successful!')
+    print('✅ CSM Turbo system files verified!')
     
     if torch.cuda.is_available():
         gpu_info = torch.cuda.get_device_properties(0)
@@ -402,17 +348,17 @@ try:
         print('✅ torch.compiler compatible')
     
 except Exception as e:
-    print(f'❌ CSM system test failed: {e}')
+    print(f'❌ CSM Turbo system test failed: {e}')
     import traceback
     traceback.print_exc()
     exit(1)
 "
 
 if [ $? -ne 0 ]; then
-    echo "❌ Sistema CSM no funcionó correctamente"
+    echo "❌ Sistema CSM Turbo no funcionó correctamente"
     echo "🔍 Información de debugging:"
-    echo "📁 Contenido del directorio del modelo:"
-    ls -la "$MODEL_DIR/" || echo "Directorio no accesible"
+    echo "📁 Contenido del directorio del modelo turbo:"
+    ls -la "$TURBO_DIR/" || echo "Directorio no accesible"
     exit 1
 fi
 
@@ -421,13 +367,13 @@ echo "📊 10. Información del sistema configurado..."
 echo "============================================================"
 echo "🎤 CSM VOICE CLONING SYSTEM - READY"
 echo "============================================================"
-echo "📦 Sistema: CSM-1B nativo de Transformers"
-echo "🤖 Modelo: models/sesame-csm-1b ($(du -sh models/sesame-csm-1b | cut -f1))"
+echo "📦 Sistema: CSM-1B Turbo (INT8 Cuantizado)"
+echo "🤖 Modelo: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model_uint8.safetensors | cut -f1))"
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
 echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
-echo "✅ Archivos safetensors verificados:"
-ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
+echo "✅ Archivo modelo turbo verificado:"
+ls -la "$TURBO_DIR"/model_uint8.safetensors
 echo "============================================================"
 
 # 11. Iniciar API
