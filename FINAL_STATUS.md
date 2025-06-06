@@ -30,6 +30,8 @@ Crear un sistema de clonación de voz compatible con **RTX 4090, RTX 6000 Ada y 
 - ✅ Conversión automática de tipos de tensor
 - ✅ Fallback CPU para RTX 5090 incompatible
 - ✅ Recuperación de errores CUDA durante generación
+- ✅ **FIX**: Corrección de tipos de tensor para embedding layers
+- ✅ **FIX**: input_ids y token_type_ids convertidos a Long en CPU mode
 
 ### ⚡ **Optimizaciones Específicas por GPU**
 ```python
@@ -52,6 +54,32 @@ torch_dtype=torch.float32, device_map="cpu", stable_mode=True
 - ✅ Procesamiento consistente en CPU/GPU
 - ✅ Manejo de errores durante generación
 
+## 🔧 **Últimas Correcciones (Commit 6f8399c)**
+
+### 🎯 **Fix de Tipos de Tensor para CPU Fallback**
+El último commit resolvió un error crítico en el modo CPU fallback:
+
+**Problema:**
+```
+Expected tensor for argument #1 'indices' to have Long/Int; 
+but got torch.FloatTensor instead (embedding layer)
+```
+
+**Solución Implementada:**
+```python
+# Conversión automática para embedding layers
+if key in ['input_ids', 'token_type_ids'] and cpu_value.dtype.is_floating_point:
+    cpu_inputs[key] = cpu_value.long()  # Convert to integer tensor
+elif key == 'attention_mask' and cpu_value.dtype.is_floating_point:
+    cpu_inputs[key] = cpu_value.long()  # Convert attention mask
+```
+
+**Resultado:**
+- ✅ CPU fallback mode completamente funcional
+- ✅ Generación regular: 84KB de audio exitoso  
+- ✅ Generación extendida: 214KB de audio exitoso
+- ✅ Sin errores de tipo de tensor en embeddings
+
 ## 🧪 **Pruebas Realizadas**
 
 ### ✅ **RTX 6000 Ada Generation (Probado)**
@@ -60,6 +88,8 @@ torch_dtype=torch.float32, device_map="cpu", stable_mode=True
 🔧 Compute Capability: 8.9
 🎯 Model dtype: torch.float16
 ✅ Generated audio: test_dtype_fix.wav (84KB)
+✅ Extended generation: test_extended_fix.wav (214KB)
+✅ Tensor type fixes verified: No embedding errors
 ```
 
 ### ✅ **RTX 5090 (Simulado con warnings)**
