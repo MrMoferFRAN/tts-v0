@@ -176,86 +176,44 @@ if [ -f "$TURBO_DIR/model.safetensors" ]; then
     model_size=$(du -sh "$TURBO_DIR/model.safetensors" | cut -f1)
     echo "📦 Tamaño del modelo turbo: $model_size"
 fi
-
-# 4.2  DESCARGAR ARCHIVOS AUXILIARES DEL MODELO BASE ─────────────────────────
-echo "🔍 4.2 Descargando archivos auxiliares de sesame/csm-1b ..."
-
-BASE_REPO="sesame/csm-1b"
-AUX_FILES=(
-  "config.json"
-  "generation_config.json"
-  "tokenizer_config.json"
-  "tokenizer.json"                 # si el modelo usa tokenizador JSON
-  "spiece.model"                   # o bien vocab.json/merges.txt si es BPE
-  "vocab.json"
-  "merges.txt"
-  "special_tokens_map.json"
-  "preprocessor_config.json"
-)
-
-for file in "${AUX_FILES[@]}"; do
-  # omite archivos inexistentes en el repo (HF lanza error 404)
-  if [ ! -f "$TURBO_DIR/$file" ]; then
-    echo "📥  Descargando $file ..."
-    python - <<PY
-import os, sys
-from huggingface_hub import hf_hub_download
-try:
-    from huggingface_hub import HfHubHTTPError          # >=0.24
-except ImportError:
-    from huggingface_hub.utils import HfHubHTTPError    # <=0.23
-
-repo      = "$BASE_REPO"
-filename  = "$file"
-dest_dir  = "$TURBO_DIR"
-token     = os.environ.get("HF_TOKEN")
-
-try:
-    hf_hub_download(
-        repo_id = repo,
-        filename = filename,
-        local_dir = dest_dir,
-        local_dir_use_symlinks = False,
-        token = token
-    )
-    print(f"✅  $file descargado")
-except HfHubHTTPError as err:
-    if err.response_code == 404:
-        print(f"⚠️  $file no existe en el repo, se omite")
-    else:
-        print(f"❌  Error descargando $file: {err}")
-        sys.exit(1)
-PY
-  else
-    echo "✅  $file ya presente"
-  fi
-done
-
-# 4.3  AÑADIR PLANTILLA DE CHAT (chat_template) SI FALTA ─────────────────────–
+# 4.2  ─── Copiar metadatos ligeros del repo vanilla ───────────────
+echo "🔍 Descargando metadatos ligeros de sesame/csm-1b ..."
 python - <<'PY'
-import json, pathlib, textwrap, datetime
+import os, sys, json, textwrap
+from huggingface_hub import hf_hub_download
 
-cfg_path = pathlib.Path("./models/csm-1b-turbo/tokenizer_config.json")
-if cfg_path.exists():
-    with cfg_path.open("r", encoding="utf-8") as f:
-        cfg = json.load(f)
+repo_id      = "sesame/csm-1b"
+dst_dir      = "models/csm-1b-turbo"
+token        = os.environ.get("HF_TOKEN")
+need_files   = [
+    "config.json",
+    "generation_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+]
 
-    if "chat_template" not in cfg:
-        cfg["chat_template"] = textwrap.dedent("""
-        {% for m in messages %}[{{ m.role }}]{% for c in m.content %}
-        {{ (c.text if c.type == 'text' else '<AUDIO>') | trim }}{% endfor %}
-        {% endfor %}""").strip()
+for fname in need_files:
+    fpath = os.path.join(dst_dir, fname)
+    if os.path.exists(fpath):
+        print(f"   • {fname:25s} ✅ ya existe")
+        continue
+    try:
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=fname,
+            local_dir=dst_dir,
+            local_dir_use_symlinks=False,
+            token=token,
+        )
+        print(f"   • {fname:25s} ✅ descargado")
+    except Exception as e:
+        print(f"   • {fname:25s} ❌ {e}")
+        sys.exit(1)
 
-        cfg["updated_at"] = datetime.datetime.now().isoformat()
-        with cfg_path.open("w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-        print("✅  chat_template añadido a tokenizer_config.json")
-    else:
-        print("✅  tokenizer_config.json ya contiene chat_template")
-else:
-    print("⚠️  tokenizer_config.json no encontrado; omitiendo parche")
+print("✅ Todos los metadatos listos en", dst_dir)
 PY
-echo "✅ Archivos auxiliares preparados"
 
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
