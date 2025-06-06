@@ -265,6 +265,82 @@ else
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# 4.2 COMPLETAR METADATOS DEL TURBO INT8
+# ---------------------------------------------------------------------------
+echo "🔍 4.2 Completando metadatos del turbo INT8…"
+TURBO_DIR="./models/csm-1b-turbo"
+BASE_DIR="./models/sesame-csm-1b"  # ya lo tienes completo
+
+# 1) Si el repositorio INT8 contiene los ficheros, descárgalos
+python - <<'PY'
+import os, sys
+from huggingface_hub import snapshot_download
+
+need = {
+    "tokenizer.json",
+    "tokenizer_config.json", 
+    "special_tokens_map.json",
+    "processor_config.json",
+    "preprocessor_config.json",
+    "chat_template.json",
+    "generation_config.json",
+}
+
+have = set(os.listdir("models/csm-1b-turbo"))
+missing = need - have
+
+if missing:
+    print(f"🔄 Faltan {len(missing)} archivos en turbo → intentando descargarlos…")
+    try:
+        snapshot_download(
+            repo_id="lunahr/csm-1b-safetensors-quants",
+            local_dir="models/csm-1b-turbo",
+            allow_patterns=list(missing),
+            local_dir_use_symlinks=False,
+            resume_download=True,
+            token=os.environ.get("HF_TOKEN"),
+        )
+        print("✅ Metadatos adicionales descargados")
+    except Exception as e:
+        print(f"⚠️ No se pudieron descargar algunos metadatos: {e}")
+        print("💡 Se intentará copiar desde el modelo base")
+else:
+    print("✅ Todos los metadatos ya están presentes")
+PY
+
+# 2) Si aún faltan, cópialos del modelo "normal"
+for f in tokenizer.json tokenizer_config.json special_tokens_map.json \
+         processor_config.json preprocessor_config.json chat_template.json \
+         generation_config.json; do
+    if [ ! -f "$TURBO_DIR/$f" ] && [ -f "$BASE_DIR/$f" ]; then
+        echo "📥 Copiando $f desde modelo base"
+        cp "$BASE_DIR/$f" "$TURBO_DIR/"
+    fi
+done
+
+# 3) Verificación final
+missing_critical=()
+for f in tokenizer.json processor_config.json config.json; do
+    if [ ! -f "$TURBO_DIR/$f" ]; then
+        missing_critical+=("$f")
+    fi
+done
+
+if [ ${#missing_critical[@]} -gt 0 ]; then
+    echo "❌ Faltan archivos críticos para AutoProcessor:"
+    for f in "${missing_critical[@]}"; do
+        echo "   - $f"
+    done
+    echo "📁 Contenido actual de $TURBO_DIR:"
+    ls -la "$TURBO_DIR/"
+    exit 1
+fi
+
+echo "✅ Metadatos del turbo completos"
+echo "📋 Archivos de configuración verificados:"
+ls -la "$TURBO_DIR"/*.json | sed 's/^/   /'
+
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
 if [ -d "./datasets/csm-1b-elise" ]; then
