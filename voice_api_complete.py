@@ -170,7 +170,15 @@ class CSMVoiceManager:
         
         # Use global cuda_available variable to determine device
         global cuda_available
-        self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
+        
+        # Check if CUDA was forcibly disabled by RTX 5090 detection
+        cuda_disabled = os.environ.get('CUDA_VISIBLE_DEVICES') == ''
+        
+        if cuda_disabled:
+            self.device = "cpu"
+            logger.info("💻 Using CPU device (forced for RTX 5090 compatibility)")
+        else:
+            self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
         
         # Check if we're on RTX 5090 with compatibility issues
         self.is_rtx5090_problematic = False
@@ -341,12 +349,19 @@ class CSMVoiceManager:
             logger.info("🚀 Applied memory optimizations (low_cpu_mem_usage)")
             logger.info("✅ Turbo CSM model loaded successfully as primary model")
             
-            if torch.cuda.is_available():
-                gpu_info = torch.cuda.get_device_properties(0)
-                memory_gb = gpu_info.total_memory / 1024**3
-                logger.info(f"🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)")
-                logger.info(f"🖥️ GPU Memory Used: {torch.cuda.memory_allocated() / 1024**3:.1f} GB")
-                logger.info(f"🔧 Compute Capability: {device_props.major}.{device_props.minor}")
+            if torch.cuda.is_available() and self.device == "cuda":
+                try:
+                    gpu_info = torch.cuda.get_device_properties(0)
+                    memory_gb = gpu_info.total_memory / 1024**3
+                    logger.info(f"🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)")
+                    logger.info(f"🖥️ GPU Memory Used: {torch.cuda.memory_allocated() / 1024**3:.1f} GB")
+                    logger.info(f"🔧 Compute Capability: {gpu_info.major}.{gpu_info.minor}")
+                    logger.info(f"🎯 Model dtype: {next(self.model.parameters()).dtype}")
+                except Exception as gpu_error:
+                    logger.warning(f"⚠️ Could not get GPU info: {gpu_error}")
+                    logger.info(f"🎯 Model dtype: {next(self.model.parameters()).dtype}")
+            else:
+                logger.info("💻 Model loaded on CPU")
                 logger.info(f"🎯 Model dtype: {next(self.model.parameters()).dtype}")
             
         except Exception as e:
@@ -619,8 +634,12 @@ class CSMVoiceManager:
                         if waveform.shape[0] > 1:
                             waveform = waveform.mean(dim=0, keepdim=True)
                         
-                        # Mantener audio como float32 para evitar problemas de rango
-                        audio_data = waveform.squeeze().numpy().astype(np.float32)
+                        # Convert audio to match model dtype
+                        model_dtype = next(model.parameters()).dtype
+                        if model_dtype == torch.float16:
+                            audio_data = waveform.squeeze().numpy().astype(np.float16)
+                        else:
+                            audio_data = waveform.squeeze().numpy().astype(np.float32)
                         
                         conversation.append({
                             "role": "0",
@@ -653,6 +672,14 @@ class CSMVoiceManager:
                 # Sin contexto, usar formato simple
                 formatted_text = f"[0]{text}"
                 inputs = processor(formatted_text, add_special_tokens=True).to(self.device)
+            
+            # Ensure tensor types match the model dtype
+            model_dtype = next(model.parameters()).dtype
+            for key, value in inputs.items():
+                if hasattr(value, 'dtype') and value.dtype.is_floating_point:
+                    if value.dtype != model_dtype:
+                        inputs[key] = value.to(dtype=model_dtype)
+                        logger.debug(f"🔄 Converted {key} from {value.dtype} to {model_dtype}")
             
             # Generación con manejo robusto de errores CUDA
             try:
