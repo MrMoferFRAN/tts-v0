@@ -207,36 +207,6 @@ ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
 model_size=$(du -sh "$MODEL_DIR" | cut -f1)
 echo "📦 Tamaño total del modelo: $model_size"
 
-# 4.2 COMPLETAR METADATOS DEL TURBO INT8 ─────────────────────────────────────
-echo "🔍 4.2 Completando metadatos del turbo INT8…"
-TURBO_DIR="./models/csm-1b-turbo"
-
-# Copiar processor_config.json si falta
-if [ ! -f "$TURBO_DIR/processor_config.json" ]; then
-    echo "⚠️  processor_config.json no encontrado; copiando desde sesame/csm-1b…"
-    python - <<'PY'
-import os, shutil
-from huggingface_hub import hf_hub_download
-
-dst_dir = "models/csm-1b-turbo"
-os.makedirs(dst_dir, exist_ok=True)
-
-try:
-    src = hf_hub_download(
-        repo_id="sesame/csm-1b",
-        filename="processor_config.json",
-        token=os.environ.get("HF_TOKEN")
-    )
-    shutil.copy(src, os.path.join(dst_dir, "processor_config.json"))
-    print("✅ processor_config.json copiado a turbo")
-except Exception as e:
-    print(f"❌ No se pudo copiar processor_config.json: {e}")
-    exit(1)
-PY
-else
-    echo "✅ processor_config.json ya presente"
-fi
-
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
 if [ -d "./datasets/csm-1b-elise" ]; then
