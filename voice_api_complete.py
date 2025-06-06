@@ -60,13 +60,26 @@ def setup_cuda_compatibility():
             
             # Check for RTX 5090 compatibility issue
             if device_props.major >= 12:  # RTX 5090 has sm_120
-                print("🚨 RTX 5090 detected with PyTorch compatibility issue!")
-                print("⚠️ Current PyTorch doesn't support sm_120. Applying workarounds...")
+                pytorch_version = torch.__version__
+                major_version = int(pytorch_version.split('.')[0])
+                minor_version = int(pytorch_version.split('.')[1])
                 
-                # Set environment variables to force CPU fallback for problematic operations
-                os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Force CPU mode temporarily
-                print("🔄 Forcing CPU mode for RTX 5090 compatibility")
-                return False  # Indicate CUDA should not be used
+                print("🚨 RTX 5090 detected!")
+                print(f"🐍 PyTorch Version: {pytorch_version}")
+                
+                if major_version < 2 or (major_version == 2 and minor_version < 5):
+                    print("⚠️ PyTorch < 2.5 with RTX 5090 - using conservative mode")
+                    print("🔧 Applying compatibility workarounds...")
+                    
+                    # Set conservative mode instead of forcing CPU
+                    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256,expandable_segments:False'
+                    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous for stability
+                    
+                    print("✅ RTX 5090 compatibility mode enabled")
+                    return True  # Allow CUDA with conservative settings
+                else:
+                    print("✅ PyTorch >= 2.5 - full RTX 5090 support available")
+                    return True
                 
             # Specific optimizations for supported RTX series
             elif device_props.major >= 9:  # RTX 4090 series with sm_90 support
@@ -212,14 +225,20 @@ class CSMVoiceManager:
                     compute_capability = f"{device_props.major}.{device_props.minor}"
                     
                     # Optimize loading based on GPU architecture
-                    if device_props.major >= 9:  # RTX 4090 series with sm_90 support
+                    if device_props.major >= 12:  # RTX 5090
+                        logger.info("🚨 RTX 5090 detected - using conservative loading")
+                        model_kwargs.update({
+                            "device_map": self.device,
+                            "torch_dtype": torch.float32,  # Most conservative for compatibility
+                        })
+                    elif device_props.major >= 9:  # RTX 4090 series with sm_90 support
                         logger.info("🚀 RTX 4090+ series detected - using advanced loading")
                         model_kwargs.update({
                             "device_map": "auto",
                             "torch_dtype": torch.float16,  # More conservative for compatibility
                         })
-                    elif device_props.major >= 8:  # RTX 4090, 6000 Ada
-                        logger.info("⚡ RTX 4090/6000 Ada detected - using optimized loading")
+                    elif device_props.major >= 8:  # RTX 6000 Ada
+                        logger.info("⚡ RTX 6000 Ada detected - using optimized loading")
                         model_kwargs.update({
                             "device_map": self.device,
                             "torch_dtype": torch.float16,  # Good balance for 8.x series

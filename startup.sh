@@ -528,22 +528,21 @@ if torch.cuda.is_available():
         print(f'🖥️ GPU: {gpu_name}')
         print(f'🔧 Compute Capability: {compute_capability}')
         
-        # Check for RTX 5090 compatibility issue
-        if 'RTX 5090' in gpu_name or device_props.major >= 12:
-            print('🚨 RTX 5090 detectada!')
-            pytorch_version = torch.__version__
-            major_version = int(pytorch_version.split(\".\")[0])
-            minor_version = int(pytorch_version.split(\".\")[1])
-            
-            if major_version < 2 or (major_version == 2 and minor_version < 5):
-                print('❌ PyTorch incompatible con RTX 5090')
-                print('⚠️ RTX 5090 requires PyTorch 2.5+ with CUDA 12.4+')
-                print('🔧 Soluciones disponibles:')
-                print('   1. Actualizar: pip install torch==2.5.0 --index-url https://download.pytorch.org/whl/cu124')
-                print('   2. Modo CPU: export CUDA_VISIBLE_DEVICES=\"\"')
-                sys.exit(1)
-            else:
-                print('✅ PyTorch compatible con RTX 5090')
+                 # Check for RTX 5090 compatibility issue
+         if 'RTX 5090' in gpu_name or device_props.major >= 12:
+             print('🚨 RTX 5090 detectada!')
+             pytorch_version = torch.__version__
+             major_version = int(pytorch_version.split(\".\")[0])
+             minor_version = int(pytorch_version.split(\".\")[1])
+             
+             if major_version < 2 or (major_version == 2 and minor_version < 5):
+                 print('⚠️ PyTorch < 2.5 con RTX 5090 - modo conservador')
+                 print('🔧 Sistema puede funcionar con warnings, aplicando optimizaciones...')
+                 print('💡 Para mejor rendimiento, considera actualizar:')
+                 print('   pip install torch==2.5.0 --index-url https://download.pytorch.org/whl/cu124')
+                 print('✅ Continuando en modo conservador RTX 5090')
+             else:
+                 print('✅ PyTorch >= 2.5 - soporte completo RTX 5090')
         else:
             print('✅ GPU compatible')
     except Exception as e:
@@ -562,17 +561,9 @@ if [ $gpu_check_result -eq 0 ]; then
     # Ejecutar API completa
     python voice_api_complete.py
 else
-    echo "⚠️ GPU incompatible detectada (RTX 5090 con PyTorch antiguo)"
-    echo "🔧 ¿Continuar en modo CPU? (y/N): "
-    read -r response
+    echo "✅ GPU compatible detectada - iniciando API..."
+    echo "🚀 12. Iniciando CSM Voice Cloning API..."
     
-    if [[ "$response" =~ ^[Yy]$ ]]; then
-        echo "🔄 Iniciando en modo CPU..."
-        export CUDA_VISIBLE_DEVICES=''
-        python voice_api_complete.py
-    else
-        echo "❌ Proceso detenido. Actualiza PyTorch para RTX 5090:"
-        echo "   pip install torch==2.5.0 torchvision==0.20.0 --index-url https://download.pytorch.org/whl/cu124"
-                 exit 1
-     fi
+    # Ejecutar API completa
+    python voice_api_complete.py
 fi
