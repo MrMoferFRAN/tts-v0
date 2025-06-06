@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script de instalación para CSM (Conversational Speech Model)
-Maneja las dependencias de manera eficiente y verifica la instalación.
+Maneja las depeencias de manera eficiente y verifica la instalación.
 """
 
 import subprocess
