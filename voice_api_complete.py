@@ -687,14 +687,20 @@ class CSMVoiceManager:
                 if self.is_rtx5090_problematic:
                     logger.info("🚨 Using RTX 5090 compatible generation mode (CPU)")
                     
-                    # Ensure all inputs are on CPU and correct dtype
+                    # Ensure all inputs are on CPU with correct dtypes
                     cpu_inputs = {}
                     for key, value in inputs.items():
                         if hasattr(value, 'cpu'):
                             cpu_value = value.cpu()
-                            # Ensure consistent dtype
-                            if hasattr(cpu_value, 'float'):
-                                cpu_inputs[key] = cpu_value.float()
+                            # Handle different tensor types correctly
+                            if key in ['input_ids', 'token_type_ids'] and cpu_value.dtype.is_floating_point:
+                                # Token IDs must be integers for embedding layers
+                                cpu_inputs[key] = cpu_value.long()
+                                logger.debug(f"🔄 Converted {key} to long for embedding compatibility")
+                            elif key == 'attention_mask' and cpu_value.dtype.is_floating_point:
+                                # Attention mask should be integers (0 or 1)
+                                cpu_inputs[key] = cpu_value.long()
+                                logger.debug(f"🔄 Converted {key} to long for attention mask")
                             else:
                                 cpu_inputs[key] = cpu_value
                         else:
@@ -739,11 +745,22 @@ class CSMVoiceManager:
                         
                         # Move model and inputs to CPU for this generation
                         try:
-                            # Move inputs to CPU
+                            # Move inputs to CPU with proper dtype handling
                             cpu_inputs = {}
                             for key, value in inputs.items():
                                 if hasattr(value, 'cpu'):
-                                    cpu_inputs[key] = value.cpu()
+                                    cpu_value = value.cpu()
+                                    # Handle different tensor types correctly
+                                    if key in ['input_ids', 'token_type_ids'] and cpu_value.dtype.is_floating_point:
+                                        # Token IDs must be integers for embedding layers
+                                        cpu_inputs[key] = cpu_value.long()
+                                        logger.debug(f"🔄 Converted {key} to long for embedding compatibility")
+                                    elif key == 'attention_mask' and cpu_value.dtype.is_floating_point:
+                                        # Attention mask should be integers (0 or 1)
+                                        cpu_inputs[key] = cpu_value.long()
+                                        logger.debug(f"🔄 Converted {key} to long for attention mask")
+                                    else:
+                                        cpu_inputs[key] = cpu_value
                                 else:
                                     cpu_inputs[key] = value
                             
