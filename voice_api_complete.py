@@ -17,6 +17,7 @@ from datetime import datetime
 import tempfile
 import shutil
 import re
+import copy
 
 import torch
 import torchaudio
@@ -697,7 +698,7 @@ class CSMVoiceManager:
             # -------------------------------------------------
             # 1) Preparar kwargs de generación con control total
             # -------------------------------------------------
-            gen_cfg = model.generation_config.clone()
+            gen_cfg = copy.deepcopy(model.generation_config)
             gen_cfg.do_sample = True
             gen_cfg.temperature = temperature
             gen_cfg.top_p = top_p
