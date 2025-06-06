@@ -528,21 +528,21 @@ if torch.cuda.is_available():
         print(f'🖥️ GPU: {gpu_name}')
         print(f'🔧 Compute Capability: {compute_capability}')
         
-                 # Check for RTX 5090 compatibility issue
-         if 'RTX 5090' in gpu_name or device_props.major >= 12:
-             print('🚨 RTX 5090 detectada!')
-             pytorch_version = torch.__version__
-             major_version = int(pytorch_version.split(\".\")[0])
-             minor_version = int(pytorch_version.split(\".\")[1])
-             
-             if major_version < 2 or (major_version == 2 and minor_version < 5):
-                 print('⚠️ PyTorch < 2.5 con RTX 5090 - modo conservador')
-                 print('🔧 Sistema puede funcionar con warnings, aplicando optimizaciones...')
-                 print('💡 Para mejor rendimiento, considera actualizar:')
-                 print('   pip install torch==2.5.0 --index-url https://download.pytorch.org/whl/cu124')
-                 print('✅ Continuando en modo conservador RTX 5090')
-             else:
-                 print('✅ PyTorch >= 2.5 - soporte completo RTX 5090')
+        # Check for RTX 5090 compatibility issue
+        if 'RTX 5090' in gpu_name or device_props.major >= 12:
+            print('🚨 RTX 5090 detectada!')
+            pytorch_version = torch.__version__
+            major_version = int(pytorch_version.split(\".\")[0])
+            minor_version = int(pytorch_version.split(\".\")[1])
+            
+            if major_version < 2 or (major_version == 2 and minor_version < 5):
+                print('⚠️ PyTorch < 2.5 con RTX 5090 - modo conservador')
+                print('🔧 Sistema puede funcionar con warnings, aplicando optimizaciones...')
+                print('💡 Para mejor rendimiento, considera actualizar:')
+                print('   pip install torch==2.5.0 --index-url https://download.pytorch.org/whl/cu124')
+                print('✅ Continuando en modo conservador RTX 5090')
+            else:
+                print('✅ PyTorch >= 2.5 - soporte completo RTX 5090')
         else:
             print('✅ GPU compatible')
     except Exception as e:
