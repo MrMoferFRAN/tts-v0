@@ -49,11 +49,17 @@ models/**/*
 *.wav
 *.mp3
 
+# Excepción: permitir archivos .wav en la carpeta voices/
+!voices/**/*.wav
+
 # Output files
 outputs/
 outputs/**/*
 *.wav
 *.mp3
+
+# Excepción: permitir archivos .wav en la carpeta voices/
+!voices/**/*.wav
 
 # System files
 .DS_Store
