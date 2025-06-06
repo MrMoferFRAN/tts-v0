@@ -11,7 +11,7 @@ echo "============================================================"
 
 # 1. Environment Verification
 echo "🔍 1. Verificando entorno del sistema..."
-cd /workspace/runttspod
+cd /workspace/tts-v0
 
 # Check GPU
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits | head -1
@@ -46,9 +46,9 @@ pip install --no-cache-dir huggingface-hub --upgrade
 python -c "from huggingface_hub import login; login('$HF_TOKEN')" 2>/dev/null || echo "⚠️ huggingface-hub login failed, using git credentials"
 
 export NO_TORCH_COMPILE=1
-export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"
+export PYTHONPATH="/workspace/tts-v0:$PYTHONPATH"
 echo 'export NO_TORCH_COMPILE=1' >> ~/.bashrc
-echo 'export PYTHONPATH="/workspace/runttspod:$PYTHONPATH"' >> ~/.bashrc
+echo 'export PYTHONPATH="/workspace/tts-v0:$PYTHONPATH"' >> ~/.bashrc
 echo "✅ Variables de entorno y autenticación configuradas"
 
 # 3. INSTALAR DEPENDENCIAS CRÍTICAS PRIMERO
@@ -270,7 +270,7 @@ try:
     # Actualizar path del audio
     if 'profiles' in data and len(data['profiles']) > 0:
         data['profiles'][0]['name'] = 'fran_fem_sample'
-        data['profiles'][0]['audio_path'] = '/workspace/runttspod/voices/fran-fem/fran_fem_sample.wav'
+        data['profiles'][0]['audio_path'] = '/workspace/tts-v0/voices/fran-fem/fran_fem_sample.wav'
         data['updated_at'] = datetime.now().isoformat()
         
         with open('voices/fran-fem/profiles.json', 'w', encoding='utf-8') as f:
@@ -346,32 +346,6 @@ echo "============================================================"
 
 # 10. Iniciar API
 echo "🚀 10. Iniciando CSM Voice Cloning API..."
-echo "============================================================"
-echo "🌐 ACCESO A LA API:"
-echo "   • URL Principal: http://0.0.0.0:7860"
-echo "   • Documentación: http://0.0.0.0:7860/docs"
-echo "   • Health Check: http://0.0.0.0:7860/health"
-echo "   • Voice Collections: http://0.0.0.0:7860/voices"
-echo "============================================================"
-echo "🎯 COMANDOS DE PRUEBA:"
-echo "   # Health check:"
-echo "   curl http://localhost:7860/health"
-echo ""
-echo "   # Listar voces:"
-echo "   curl http://localhost:7860/voices"
-echo ""
-echo "   # Clonar voz:"
-echo "   curl -X POST 'http://localhost:7860/clone' \\"
-echo "        -F 'text=Hola mundo' \\"
-echo "        -F 'voice_id=fran-fem'"
-echo ""
-echo "   # Subir nueva voz:"
-echo "   curl -X POST 'http://localhost:7860/voices/mi-voz/upload' \\"
-echo "        -F 'audio_file=@audio.wav' \\"
-echo "        -F 'transcription=Texto del audio'"
-echo "============================================================"
-echo "🛑 Presiona Ctrl+C para detener el servidor"
-echo "============================================================"
 
 # Ejecutar API completa
 python voice_api_complete.py 
