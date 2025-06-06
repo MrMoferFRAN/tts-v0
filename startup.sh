@@ -199,7 +199,11 @@ for file in "${AUX_FILES[@]}"; do
     echo "📥  Descargando $file ..."
     python - <<PY
 import os, sys
-from huggingface_hub import hf_hub_download, HfHubHTTPError
+from huggingface_hub import hf_hub_download
+try:
+    from huggingface_hub import HfHubHTTPError          # >=0.24
+except ImportError:
+    from huggingface_hub.utils import HfHubHTTPError    # <=0.23
 
 repo      = "$BASE_REPO"
 filename  = "$file"
