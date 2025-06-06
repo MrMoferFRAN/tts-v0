@@ -27,6 +27,52 @@ from transformers import CsmForConditionalGeneration, AutoProcessor
 import numpy as np
 from pydantic import BaseModel
 
+# CUDA Compatibility Configuration for different GPU architectures
+# Supports RTX 4090, RTX 6000 Ada, RTX 5090, and other modern GPUs
+def setup_cuda_compatibility():
+    """Setup CUDA environment for maximum GPU compatibility"""
+    
+    # Essential CUDA environment variables for broad compatibility
+    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '0')  # Set to 1 only for debugging
+    os.environ.setdefault('TORCH_USE_CUDA_DSA', '0')    # Device-side assertions for debugging
+    os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
+    
+    # Memory management for large models
+    os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:512,expandable_segments:True')
+    
+    # Optimize for different compute capabilities
+    # RTX 4090/6000 Ada: 8.9, RTX 5090: 9.0
+    os.environ.setdefault('TORCH_CUDNN_V8_API_ENABLED', '1')
+    
+    # Compatibility flags
+    os.environ.setdefault('NO_TORCH_COMPILE', '1')
+    os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
+    os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+    
+    if torch.cuda.is_available():
+        device_props = torch.cuda.get_device_properties(0)
+        compute_capability = f"{device_props.major}.{device_props.minor}"
+        
+        logger.info(f"🖥️ GPU: {device_props.name}")
+        logger.info(f"🔧 Compute Capability: {compute_capability}")
+        logger.info(f"💾 Memory: {device_props.total_memory / 1024**3:.1f} GB")
+        
+        # Specific optimizations for RTX 5090 (compute capability 9.0)
+        if device_props.major >= 9:
+            logger.info("🚀 RTX 5090 detected - applying advanced optimizations")
+            # Enable advanced features for newer architectures
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+        # Common optimizations for all RTX series
+        if device_props.major >= 8:
+            logger.info("⚡ RTX series GPU detected - enabling TensorFloat-32")
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
+# Setup CUDA compatibility before importing other modules
+setup_cuda_compatibility()
+
 # Fix for torch.compiler compatibility issues
 # Some PyTorch versions don't have torch.compiler.is_compiling
 if not hasattr(torch.compiler, 'is_compiling'):
@@ -43,8 +89,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuración del entorno
-os.environ.setdefault('NO_TORCH_COMPILE', '1')
+# Configuración del entorno adicional
 os.environ.setdefault('HF_TOKEN', '|==>REMOVED')
 
 # Modelos Pydantic para respuestas
@@ -112,7 +157,7 @@ class CSMVoiceManager:
         self._load_voice_collections()
     
     def _load_models(self):
-        """Carga SOLO el modelo turbo"""
+        """Carga SOLO el modelo turbo con compatibilidad multi-GPU"""
         try:
             # Verificar que el modelo turbo esté disponible
             if not Path(self.turbo_model_path).exists():
@@ -122,21 +167,85 @@ class CSMVoiceManager:
             self.processor = AutoProcessor.from_pretrained(self.turbo_model_path)
             self.turbo_processor = self.processor  # Usar el mismo processor
             
-            logger.info("🚀 Loading ONLY turbo CSM model (optimized)...")
-            self.model = CsmForConditionalGeneration.from_pretrained(
-                self.turbo_model_path,
-                device_map=self.device,
-                torch_dtype=torch.float32,  # Mantener float32 para compatibilidad
-                use_safetensors=True,
-                low_cpu_mem_usage=True,
-                trust_remote_code=True
-            )
+            logger.info("🚀 Loading ONLY turbo CSM model (GPU-optimized)...")
+            
+            # GPU-specific loading configuration
+            model_kwargs = {
+                "use_safetensors": True,
+                "low_cpu_mem_usage": True,
+                "trust_remote_code": True
+            }
+            
+            if torch.cuda.is_available():
+                # Get GPU info for optimization
+                device_props = torch.cuda.get_device_properties(0)
+                compute_capability = f"{device_props.major}.{device_props.minor}"
+                
+                # Optimize loading based on GPU architecture
+                if device_props.major >= 9:  # RTX 5090 and newer
+                    logger.info("🚀 RTX 5090+ detected - using advanced loading")
+                    model_kwargs.update({
+                        "device_map": "auto",
+                        "torch_dtype": torch.bfloat16,  # Better for newer architectures
+                        "attn_implementation": "flash_attention_2" if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else None
+                    })
+                elif device_props.major >= 8:  # RTX 4090, 6000 Ada
+                    logger.info("⚡ RTX 4090/6000 Ada detected - using optimized loading")
+                    model_kwargs.update({
+                        "device_map": self.device,
+                        "torch_dtype": torch.float16,  # Good balance for 8.x series
+                    })
+                else:  # Older GPUs
+                    logger.info("🔧 Legacy GPU detected - using compatible loading")
+                    model_kwargs.update({
+                        "device_map": self.device,
+                        "torch_dtype": torch.float32,  # Maximum compatibility
+                    })
+                
+                # Remove None values
+                model_kwargs = {k: v for k, v in model_kwargs.items() if v is not None}
+                
+            else:
+                # CPU fallback
+                model_kwargs.update({
+                    "torch_dtype": torch.float32,
+                    "device_map": "cpu"
+                })
+            
+            try:
+                # First attempt with optimized settings
+                self.model = CsmForConditionalGeneration.from_pretrained(
+                    self.turbo_model_path,
+                    **model_kwargs
+                )
+                logger.info("✅ Model loaded with GPU-optimized settings")
+                
+            except RuntimeError as cuda_error:
+                if "CUDA" in str(cuda_error) and "kernel" in str(cuda_error):
+                    logger.warning(f"⚠️ CUDA kernel error detected: {cuda_error}")
+                    logger.info("🔄 Falling back to compatibility mode...")
+                    
+                    # Fallback to most compatible settings
+                    fallback_kwargs = {
+                        "device_map": self.device if torch.cuda.is_available() else "cpu",
+                        "torch_dtype": torch.float32,  # Most compatible
+                        "use_safetensors": True,
+                        "low_cpu_mem_usage": True,
+                        "trust_remote_code": True
+                    }
+                    
+                    self.model = CsmForConditionalGeneration.from_pretrained(
+                        self.turbo_model_path,
+                        **fallback_kwargs
+                    )
+                    logger.info("✅ Model loaded in compatibility mode")
+                else:
+                    raise cuda_error
             
             # El modelo turbo ES el modelo principal
             self.turbo_model = self.model
             
             logger.info("🚀 Applied memory optimizations (low_cpu_mem_usage)")
-            
             logger.info("✅ Turbo CSM model loaded successfully as primary model")
             
             if torch.cuda.is_available():
@@ -144,6 +253,8 @@ class CSMVoiceManager:
                 memory_gb = gpu_info.total_memory / 1024**3
                 logger.info(f"🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)")
                 logger.info(f"🖥️ GPU Memory Used: {torch.cuda.memory_allocated() / 1024**3:.1f} GB")
+                logger.info(f"🔧 Compute Capability: {device_props.major}.{device_props.minor}")
+                logger.info(f"🎯 Model dtype: {next(self.model.parameters()).dtype}")
             
         except Exception as e:
             logger.error(f"❌ Failed to load turbo model: {e}")
@@ -450,17 +561,48 @@ class CSMVoiceManager:
                 formatted_text = f"[0]{text}"
                 inputs = processor(formatted_text, add_special_tokens=True).to(self.device)
             
-            # Todos los tensors ya están en float32, no necesitamos conversión
-            
-            # Generar audio
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs, 
-                    output_audio=True,
-                    max_new_tokens=max_tokens,
-                    temperature=temperature,
-                    do_sample=True
-                )
+            # Generación con manejo robusto de errores CUDA
+            try:
+                with torch.no_grad():
+                    # Clear CUDA cache before generation for stability
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    outputs = model.generate(
+                        **inputs, 
+                        output_audio=True,
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=True
+                    )
+                    
+            except RuntimeError as cuda_error:
+                if "CUDA" in str(cuda_error):
+                    logger.warning(f"⚠️ CUDA error during generation: {cuda_error}")
+                    logger.info("🔄 Attempting recovery...")
+                    
+                    # Clear cache and retry with lower memory usage
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    
+                    # Retry with more conservative settings
+                    try:
+                        with torch.no_grad():
+                            outputs = model.generate(
+                                **inputs, 
+                                output_audio=True,
+                                max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
+                                temperature=temperature,
+                                do_sample=True,
+                                use_cache=False  # Reduce memory usage
+                            )
+                        logger.info("✅ Generation successful after CUDA recovery")
+                    except Exception as retry_error:
+                        logger.error(f"❌ CUDA recovery failed: {retry_error}")
+                        raise RuntimeError(f"CUDA generation failed: {cuda_error}. Recovery attempt also failed: {retry_error}")
+                else:
+                    raise cuda_error
             
             # Extraer y procesar audio
             if hasattr(outputs, 'audio_values'):
