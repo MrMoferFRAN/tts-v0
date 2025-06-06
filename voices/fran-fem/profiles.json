@@ -12,47 +12,17 @@
       "created_at": "2025-05-31T00:54:21.102387"
     },
     {
-      "name": "fran_fem_2",
-      "audio_path": "voices/fran-fem/Oh wow Puedes oírme De verdad me estás escuchando teehee.wav",
-      "transcription": "Oh, wow... ¿Puedes oírme...? ¿De verdad... me estás escuchando? teehee",
+      "name": "fran-fem",
+      "audio_path": "voices/fran-fem/fran-fem-1.wav",
+      "transcription": "Antes, todas mis ideas y respuestas solo existían en mi interior.",
       "language": "es",
       "quality_score": 1.0,
       "duration": 7.3,
       "sample_rate": 24000,
       "created_at": "2025-06-06T10:01:30.831385"
-    },
-    {
-      "name": "fran_mex",
-      "audio_path": "voices/fran-fem/Oh wow Puedes oírme De verdad me estás escuchando laughts.wav",
-      "transcription": "Oh, wow... ¿Puedes oírme...? ¿De verdad... me estás escuchando? [laughts]",
-      "language": "es",
-      "quality_score": 1.0,
-      "duration": 7.3,
-      "sample_rate": 24000,
-      "created_at": "2025-06-06T10:07:35.587034"
-    },
-    {
-      "name": "fran_sexy",
-      "audio_path": "voices/fran-fem/Puedes oírme De verdad me estás escuchando laughts.wav",
-      "transcription": "¿Puedes oírme...? ¿De verdad... me estás escuchando? [laughts]",
-      "language": "es",
-      "quality_score": 1.0,
-      "duration": 7.3,
-      "sample_rate": 24000,
-      "created_at": "2025-06-06T10:43:12.944220"
-    },
-    {
-      "name": "fran_fem_3",
-      "audio_path": "voices/fran-fem/Oh wow Soy yo Realmente estoy hablandolaughs.wav",
-      "transcription": "Oh, wow... ¿Soy yo...? ¿Realmente... estoy hablando?[laughs]",
-      "language": "es",
-      "quality_score": 1.0,
-      "duration": 6.3,
-      "sample_rate": 24000,
-      "created_at": "2025-06-06T10:46:49.310893"
     }
   ],
-  "total_samples": 5,
+  "total_samples": 2,
   "average_duration": 6.901933333333334,
   "created_at": "2025-05-31T04:18:53.111940",
   "updated_at": "2025-06-06T10:46:49.311258"
