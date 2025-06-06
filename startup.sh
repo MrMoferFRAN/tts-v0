@@ -119,8 +119,8 @@ echo "🔍 4. Descargando modelo CSM-1B Turbo (INT8)..."
 TURBO_DIR="./models/csm-1b-turbo"
 
 # Verificar si ya existe el modelo turbo
-if [ -f "$TURBO_DIR/model_uint8.safetensors" ]; then
-    model_size=$(du -sh "$TURBO_DIR/model_uint8.safetensors" | cut -f1)
+if [ -f "$TURBO_DIR/model_int8.safetensors" ]; then
+    model_size=$(du -sh "$TURBO_DIR/model_int8.safetensors" | cut -f1)
     echo "✅ Modelo CSM-1B Turbo encontrado: $model_size"
 else
     echo "🔄 Descargando modelo CSM-1B Turbo desde lunahr/csm-1b-safetensors-quants..."
@@ -135,13 +135,13 @@ from huggingface_hub import hf_hub_download
 
 print("📥 Descargando modelo turbo cuantizado...")
 print("🔗 Repo: lunahr/csm-1b-safetensors-quants")
-print("📁 Archivo: model_uint8.safetensors")
+print("📁 Archivo: model_int8.safetensors")
 print("📁 Destino: models/csm-1b-turbo/")
 
 try:
     downloaded_file = hf_hub_download(
         repo_id="lunahr/csm-1b-safetensors-quants",
-        filename="model_uint8.safetensors",
+        filename="model_int8.safetensors",
         local_dir="models/csm-1b-turbo",
         local_dir_use_symlinks=False,
         token=os.environ.get("HF_TOKEN")
@@ -158,8 +158,8 @@ PY
     fi
     
     # Verificar descarga
-    if [ -f "$TURBO_DIR/model_uint8.safetensors" ]; then
-        model_size=$(du -sh "$TURBO_DIR/model_uint8.safetensors" | cut -f1)
+    if [ -f "$TURBO_DIR/model_int8.safetensors" ]; then
+        model_size=$(du -sh "$TURBO_DIR/model_int8.safetensors" | cut -f1)
         echo "✅ Modelo turbo descargado exitosamente: $model_size"
     else
         echo "❌ Error: archivo no encontrado después de la descarga"
@@ -323,7 +323,7 @@ try:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Verificar que el archivo turbo existe
-    turbo_file = 'model_uint8.safetensors'
+    turbo_file = 'model_int8.safetensors'
     
     print('🔍 Verificando archivo modelo turbo...')
     file_path = os.path.join(model_path, turbo_file)
@@ -368,12 +368,12 @@ echo "============================================================"
 echo "🎤 CSM VOICE CLONING SYSTEM - READY"
 echo "============================================================"
 echo "📦 Sistema: CSM-1B Turbo (INT8 Cuantizado)"
-echo "🤖 Modelo: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model_uint8.safetensors | cut -f1))"
+echo "🤖 Modelo: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model_int8.safetensors | cut -f1))"
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
 echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
 echo "✅ Archivo modelo turbo verificado:"
-ls -la "$TURBO_DIR"/model_uint8.safetensors
+ls -la "$TURBO_DIR"/model_int8.safetensors
 echo "============================================================"
 
 # 11. Iniciar API
