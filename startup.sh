@@ -207,6 +207,64 @@ ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
 model_size=$(du -sh "$MODEL_DIR" | cut -f1)
 echo "📦 Tamaño total del modelo: $model_size"
 
+# 4.1 DESCARGAR VARIANTE TURBO INT8 ──────────────────────────────────────────
+echo "🔍 4.1 Verificando modelo TURBO INT8..."
+TURBO_DIR="./models/csm-1b-turbo"
+
+# Si el safetensor INT8 no existe, lo descargamos
+if [ ! -f "$TURBO_DIR/model_int8.safetensors" ]; then
+    echo "🔄 Descargando INT8 turbo (lunahr/csm-1b-safetensors-quants)…"
+    
+    pip install --no-cache-dir huggingface_hub --upgrade
+    
+    python - <<'PY'
+import os, sys
+from huggingface_hub import snapshot_download
+
+try:
+    snapshot_download(
+        repo_id="lunahr/csm-1b-safetensors-quants",
+        local_dir="models/csm-1b-turbo",
+        local_dir_use_symlinks=False,
+        allow_patterns=[
+            "model_int8.safetensors",        # pesos INT8 (≈1.55 GB)
+            "config.json",
+            "tokenizer.json", 
+            "generation_config.json",
+            "special_tokens_map.json",
+            "*.txt"
+        ],
+        resume_download=True,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    print("✅ INT8 turbo descargado con éxito")
+except Exception as e:
+    print(f"❌ Error descargando INT8 turbo: {e}")
+    sys.exit(1)
+PY
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error descargando modelo INT8 turbo"
+        exit 1
+    fi
+else
+    echo "✅ INT8 turbo ya presente"
+fi
+
+# Verificación rápida
+if [ -f "$TURBO_DIR/model_int8.safetensors" ] && [ -f "$TURBO_DIR/config.json" ]; then
+    size_int8=$(du -sh "$TURBO_DIR/model_int8.safetensors" | cut -f1)
+    echo "📦 INT8 turbo listo (${size_int8}) → $TURBO_DIR"
+else
+    echo "❌ Faltan archivos críticos del INT8 turbo"
+    echo "📋 Archivos esperados:"
+    echo "   - $TURBO_DIR/model_int8.safetensors"
+    echo "   - $TURBO_DIR/config.json"
+    echo "📁 Contenido actual:"
+    ls -la "$TURBO_DIR/" 2>/dev/null || echo "Directorio no existe"
+    exit 1
+fi
+
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
 if [ -d "./datasets/csm-1b-elise" ]; then
@@ -358,6 +416,8 @@ from transformers import CsmForConditionalGeneration, AutoProcessor
 import os
 
 print('🔍 Testing CSM system...')
+
+# Test modelo principal
 try:
     model_path = './models/sesame-csm-1b'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -368,7 +428,7 @@ try:
         'transformers-00002-of-00002.safetensors'
     ]
     
-    print('🔍 Verificando archivos safetensors específicos...')
+    print('🔍 Verificando archivos safetensors del modelo principal...')
     for file in safetensor_files:
         file_path = os.path.join(model_path, file)
         if os.path.exists(file_path):
@@ -388,24 +448,52 @@ try:
         torch_dtype=torch.float16 if device == 'cuda' else torch.float32
     )
     
-    print('✅ CSM system test successful!')
-    
-    if torch.cuda.is_available():
-        gpu_info = torch.cuda.get_device_properties(0)
-        memory_gb = gpu_info.total_memory / 1024**3
-        print(f'🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)')
-    
-    # Test torch.compiler compatibility
-    if not hasattr(torch.compiler, 'is_compiling'):
-        print('⚠️  torch.compiler compatibility patch needed')
-    else:
-        print('✅ torch.compiler compatible')
+    print('✅ Modelo principal CSM test successful!')
+    del model  # Liberar memoria para el test del turbo
     
 except Exception as e:
-    print(f'❌ CSM system test failed: {e}')
+    print(f'❌ CSM main model test failed: {e}')
     import traceback
     traceback.print_exc()
     exit(1)
+
+# Test modelo turbo INT8 si existe
+turbo_path = './models/csm-1b-turbo'
+if os.path.exists(os.path.join(turbo_path, 'model_int8.safetensors')):
+    print('🔍 Testing modelo turbo INT8...')
+    try:
+        print(f'📥 Loading turbo processor from {turbo_path}...')
+        turbo_processor = AutoProcessor.from_pretrained(turbo_path)
+        
+        print(f'📥 Loading turbo model (INT8) on {device}...')
+        turbo_model = CsmForConditionalGeneration.from_pretrained(
+            turbo_path,
+            device_map=device,
+            torch_dtype=torch.float16 if device == 'cuda' else torch.float32
+        )
+        
+        print('✅ Modelo turbo INT8 test successful!')
+        del turbo_model  # Liberar memoria
+        
+    except Exception as e:
+        print(f'⚠️ Turbo INT8 model test failed (optional): {e}')
+        print('💡 El modelo principal sigue funcionando')
+else:
+    print('ℹ️ Modelo turbo INT8 no disponible (opcional)')
+
+# GPU info
+if torch.cuda.is_available():
+    gpu_info = torch.cuda.get_device_properties(0)
+    memory_gb = gpu_info.total_memory / 1024**3
+    print(f'🖥️ GPU: {gpu_info.name} ({memory_gb:.1f} GB)')
+
+# Test torch.compiler compatibility
+if not hasattr(torch.compiler, 'is_compiling'):
+    print('⚠️  torch.compiler compatibility patch needed')
+else:
+    print('✅ torch.compiler compatible')
+
+print('✅ Sistema CSM completamente funcional!')
 "
 
 if [ $? -ne 0 ]; then
@@ -422,12 +510,22 @@ echo "============================================================"
 echo "🎤 CSM VOICE CLONING SYSTEM - READY"
 echo "============================================================"
 echo "📦 Sistema: CSM-1B nativo de Transformers"
-echo "🤖 Modelo: models/sesame-csm-1b ($(du -sh models/sesame-csm-1b | cut -f1))"
+echo "🤖 Modelo Principal: models/sesame-csm-1b ($(du -sh models/sesame-csm-1b | cut -f1))"
+if [ -f "./models/csm-1b-turbo/model_int8.safetensors" ]; then
+    echo "⚡ Modelo Turbo INT8: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model_int8.safetensors | cut -f1))"
+else
+    echo "⚠️ Modelo Turbo INT8: No disponible"
+fi
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
 echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
 echo "✅ Archivos safetensors verificados:"
-ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
+echo "   📁 Modelo Principal:"
+ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors | sed 's/^/      /'
+if [ -f "./models/csm-1b-turbo/model_int8.safetensors" ]; then
+    echo "   ⚡ Modelo Turbo INT8:"
+    ls -la "./models/csm-1b-turbo/model_int8.safetensors" | sed 's/^/      /'
+fi
 echo "============================================================"
 
 # 11. Iniciar API
