@@ -114,13 +114,13 @@ fi
 
 echo "✅ Dependencias de audio instaladas y verificadas"
 
-# 4. Descargar modelo CSM-1B TURBO CUANTIZADO
-echo "🔍 4. Descargando modelo CSM-1B Turbo (INT8)..."
+# 4. Descargar modelo CSM-1B Turbo INT8
+echo "🔍 4. Descargando modelo CSM-1B Turbo INT8..."
 TURBO_DIR="./models/csm-1b-turbo"
 
 # Verificar si ya existe el modelo turbo
-if [ -f "$TURBO_DIR/model_int8.safetensors" ]; then
-    model_size=$(du -sh "$TURBO_DIR/model_int8.safetensors" | cut -f1)
+if [ -f "$TURBO_DIR/model.safetensors" ]; then
+    model_size=$(du -sh "$TURBO_DIR/model.safetensors" | cut -f1)
     echo "✅ Modelo CSM-1B Turbo encontrado: $model_size"
 else
     echo "🔄 Descargando modelo CSM-1B Turbo desde lunahr/csm-1b-safetensors-quants..."
@@ -128,27 +128,26 @@ else
     # Crear directorio models si no existe
     mkdir -p "$TURBO_DIR"
     
-    # Descargar modelo turbo cuantizado
+    # Descargar solo el archivo model_uint8.safetensors
     python - <<'PY'
 import os
 from huggingface_hub import hf_hub_download
 
-print("📥 Descargando modelo turbo cuantizado...")
+print("📥 Descargando model_uint8.safetensors...")
 print("🔗 Repo: lunahr/csm-1b-safetensors-quants")
-print("📁 Archivo: model_int8.safetensors")
-print("📁 Destino: models/csm-1b-turbo/")
+print("📁 Destino: models/csm-1b-turbo")
 
 try:
     downloaded_file = hf_hub_download(
         repo_id="lunahr/csm-1b-safetensors-quants",
-        filename="model_int8.safetensors",
+        filename="model_uint8.safetensors",
         local_dir="models/csm-1b-turbo",
         local_dir_use_symlinks=False,
         token=os.environ.get("HF_TOKEN")
     )
-    print(f"✅ Modelo turbo descargado: {downloaded_file}")
+    print("✅ Modelo turbo descargado exitosamente")
 except Exception as e:
-    print(f"❌ Error descargando modelo turbo: {e}")
+    print(f"❌ Error durante la descarga: {e}")
     exit(1)
 PY
 
@@ -156,15 +155,26 @@ PY
         echo "❌ Error descargando modelo turbo"
         exit 1
     fi
-    
-    # Verificar descarga
-    if [ -f "$TURBO_DIR/model_int8.safetensors" ]; then
-        model_size=$(du -sh "$TURBO_DIR/model_int8.safetensors" | cut -f1)
-        echo "✅ Modelo turbo descargado exitosamente: $model_size"
-    else
-        echo "❌ Error: archivo no encontrado después de la descarga"
-        exit 1
-    fi
+fi
+
+# 4.1.b AJUSTAR NOMBRE DEL PESO INT8 ────────────────────────────────────────
+echo "🔍 4.1.b Ajustando nombre del peso INT8…"
+
+if [ -f "$TURBO_DIR/model_uint8.safetensors" ] && [ ! -f "$TURBO_DIR/model.safetensors" ]; then
+    # Copiar model_uint8.safetensors como model.safetensors
+    cp "$TURBO_DIR/model_uint8.safetensors" "$TURBO_DIR/model.safetensors"
+    echo "✅ model_uint8.safetensors copiado como model.safetensors"
+elif [ -f "$TURBO_DIR/model.safetensors" ]; then
+    echo "✅ model.safetensors ya presente"
+else
+    echo "❌ No se encontró model_uint8.safetensors"
+    exit 1
+fi
+
+# Mostrar información del modelo turbo
+if [ -f "$TURBO_DIR/model.safetensors" ]; then
+    model_size=$(du -sh "$TURBO_DIR/model.safetensors" | cut -f1)
+    echo "📦 Tamaño del modelo turbo: $model_size"
 fi
 
 # 5. Verificar dataset Elise (opcional)
@@ -310,8 +320,8 @@ else
     echo "💡 El sistema funcionará, pero sin perfil de voz predefinido"
 fi
 
-# 9. Test robusto del sistema CSM
-echo "🔧 9. Probando sistema CSM..."
+# 9. Test robusto del sistema CSM Turbo
+echo "🔧 9. Probando sistema CSM Turbo..."
 python -c "
 import torch
 from transformers import CsmForConditionalGeneration, AutoProcessor
@@ -322,19 +332,23 @@ try:
     model_path = './models/csm-1b-turbo'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Verificar que el archivo turbo existe
-    turbo_file = 'model_int8.safetensors'
-    
-    print('🔍 Verificando archivo modelo turbo...')
-    file_path = os.path.join(model_path, turbo_file)
-    if os.path.exists(file_path):
-        size_mb = os.path.getsize(file_path) / (1024*1024)
-        print(f'✅ {turbo_file}: {size_mb:.1f} MB')
+    # Verificar que el archivo model.safetensors existe
+    model_file = os.path.join(model_path, 'model.safetensors')
+    if os.path.exists(model_file):
+        size_mb = os.path.getsize(model_file) / (1024*1024)
+        print(f'✅ model.safetensors: {size_mb:.1f} MB')
     else:
-        print(f'❌ {turbo_file}: NO ENCONTRADO')
-        raise FileNotFoundError(f'Archivo crítico faltante: {turbo_file}')
+        print(f'❌ model.safetensors: NO ENCONTRADO')
+        raise FileNotFoundError('Archivo crítico faltante: model.safetensors')
     
-    print('✅ CSM Turbo system files verified!')
+    print(f'📥 Loading model from {model_path} on {device}...')
+    model = CsmForConditionalGeneration.from_pretrained(
+        model_path,
+        device_map=device,
+        torch_dtype=torch.float16 if device == 'cuda' else torch.float32
+    )
+    
+    print('✅ CSM Turbo system test successful!')
     
     if torch.cuda.is_available():
         gpu_info = torch.cuda.get_device_properties(0)
@@ -357,7 +371,7 @@ except Exception as e:
 if [ $? -ne 0 ]; then
     echo "❌ Sistema CSM Turbo no funcionó correctamente"
     echo "🔍 Información de debugging:"
-    echo "📁 Contenido del directorio del modelo turbo:"
+    echo "📁 Contenido del directorio del modelo:"
     ls -la "$TURBO_DIR/" || echo "Directorio no accesible"
     exit 1
 fi
@@ -367,13 +381,13 @@ echo "📊 10. Información del sistema configurado..."
 echo "============================================================"
 echo "🎤 CSM VOICE CLONING SYSTEM - READY"
 echo "============================================================"
-echo "📦 Sistema: CSM-1B Turbo (INT8 Cuantizado)"
-echo "🤖 Modelo: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model_int8.safetensors | cut -f1))"
+echo "📦 Sistema: CSM-1B Turbo INT8"
+echo "🤖 Modelo: models/csm-1b-turbo ($(du -sh models/csm-1b-turbo/model.safetensors | cut -f1))"
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
 echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
-echo "✅ Archivo modelo turbo verificado:"
-ls -la "$TURBO_DIR"/model_int8.safetensors
+echo "✅ Modelo turbo verificado:"
+ls -la "$TURBO_DIR"/model.safetensors
 echo "============================================================"
 
 # 11. Iniciar API
