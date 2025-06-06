@@ -3,7 +3,7 @@
   "profiles": [
     {
       "name": "fran_fem_sample",
-      "audio_path": "/workspace/runttspod/voices/fran-fem/fran_fem_sample.wav",
+      "audio_path": "/workspace/tts-v0/voices/fran-fem/fran_fem_sample.wav",
       "transcription": "Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?",
       "language": "es",
       "quality_score": 1.0,
