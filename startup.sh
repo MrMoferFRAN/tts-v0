@@ -207,61 +207,34 @@ ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
 model_size=$(du -sh "$MODEL_DIR" | cut -f1)
 echo "📦 Tamaño total del modelo: $model_size"
 
-# 4.2. COMPLETAR METADATOS DEL TURBO INT8 ─────────────────────────────────────
+# 4.2 COMPLETAR METADATOS DEL TURBO INT8 ─────────────────────────────────────
 echo "🔍 4.2 Completando metadatos del turbo INT8…"
+TURBO_DIR="./models/csm-1b-turbo"
 
-BASE_DIR="./models/sesame-csm-1b"     # repo completo
-TURBO_DIR="./models/csm-1b-turbo"     # solo los pesos INT8
+# Copiar processor_config.json si falta
+if [ ! -f "$TURBO_DIR/processor_config.json" ]; then
+    echo "⚠️  processor_config.json no encontrado; copiando desde sesame/csm-1b…"
+    python - <<'PY'
+import os, shutil
+from huggingface_hub import hf_hub_download
 
-# Verificar si existe el directorio turbo
-if [ -d "$TURBO_DIR" ]; then
-    echo "📁 Directorio turbo INT8 encontrado: $TURBO_DIR"
-    
-    # Lista de ficheros que AutoProcessor y Tokenizer pueden necesitar
-    meta_files=(
-      processor_config.json
-      tokenizer.json
-      tokenizer_config.json
-      special_tokens_map.json
-      preprocessor_config.json
-      generation_config.json
+dst_dir = "models/csm-1b-turbo"
+os.makedirs(dst_dir, exist_ok=True)
+
+try:
+    src = hf_hub_download(
+        repo_id="sesame/csm-1b",
+        filename="processor_config.json",
+        token=os.environ.get("HF_TOKEN")
     )
-
-    echo "📋 Verificando y copiando metadatos necesarios..."
-    for f in "${meta_files[@]}"; do
-      if [ -f "$BASE_DIR/$f" ] && [ ! -f "$TURBO_DIR/$f" ]; then
-        cp "$BASE_DIR/$f" "$TURBO_DIR/"
-        echo "📋 Copiado: $f"
-      elif [ -f "$TURBO_DIR/$f" ]; then
-        echo "✅ Ya existe: $f"
-      elif [ -f "$BASE_DIR/$f" ]; then
-        echo "⚠️  Archivo ya presente en turbo: $f"
-      else
-        echo "⚠️  Archivo no encontrado en base: $f"
-      fi
-    done
-
-    # Comprobación final crítica
-    if [ ! -f "$TURBO_DIR/processor_config.json" ]; then
-      echo "❌ Falta processor_config.json en $TURBO_DIR; AutoProcessor fallará"
-      exit 1
-    fi
-
-    if [ ! -f "$TURBO_DIR/tokenizer.json" ]; then
-      echo "❌ Falta tokenizer.json en $TURBO_DIR; Tokenizer fallará"
-      exit 1
-    fi
-
-    echo "✅ Metadatos turbo completados correctamente"
-    turbo_size=$(du -sh "$TURBO_DIR" | cut -f1)
-    echo "📦 Tamaño del modelo turbo: $turbo_size"
-    
-    # Mostrar archivos en el directorio turbo
-    echo "📋 Contenido del directorio turbo:"
-    ls -la "$TURBO_DIR"/ | head -10
+    shutil.copy(src, os.path.join(dst_dir, "processor_config.json"))
+    print("✅ processor_config.json copiado a turbo")
+except Exception as e:
+    print(f"❌ No se pudo copiar processor_config.json: {e}")
+    exit(1)
+PY
 else
-    echo "ℹ️  Directorio turbo INT8 no encontrado (opcional)"
-    echo "💡 Si tienes un modelo turbo INT8, debería estar en: $TURBO_DIR"
+    echo "✅ processor_config.json ya presente"
 fi
 
 # 5. Verificar dataset Elise (opcional)
