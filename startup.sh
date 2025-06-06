@@ -265,81 +265,77 @@ else
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# 4.2 COMPLETAR METADATOS DEL TURBO INT8
-# ---------------------------------------------------------------------------
+# 4.2 COMPLETAR METADATOS DEL TURBO INT8 ────────────────────────────────
 echo "🔍 4.2 Completando metadatos del turbo INT8…"
+BASE_DIR="./models/sesame-csm-1b"
 TURBO_DIR="./models/csm-1b-turbo"
-BASE_DIR="./models/sesame-csm-1b"  # ya lo tienes completo
 
-# 1) Si el repositorio INT8 contiene los ficheros, descárgalos
 python - <<'PY'
-import os, sys
+import os, shutil, sys
 from huggingface_hub import snapshot_download
 
-need = {
+HF_TOKEN = os.getenv("HF_TOKEN")
+base_dir = os.path.abspath("models/sesame-csm-1b")
+turbo_dir = os.path.abspath("models/csm-1b-turbo")
+
+need_files = [
     "tokenizer.json",
     "tokenizer_config.json", 
     "special_tokens_map.json",
-    "processor_config.json",
     "preprocessor_config.json",
-    "chat_template.json",
-    "generation_config.json",
-}
+    "processor_config.json",  # <- el que falta
+    "generation_config.json"
+]
 
-have = set(os.listdir("models/csm-1b-turbo"))
-missing = need - have
+def ensure_base():
+    """Baja sólo metadatos si aún no existe el modelo completo."""
+    if all(os.path.isfile(os.path.join(base_dir, f)) for f in need_files):
+        return
+    
+    print("📥 Descargando metadatos del repo base sesame/csm-1b…")
+    snapshot_download(
+        repo_id="sesame/csm-1b",
+        local_dir=base_dir,
+        local_dir_use_symlinks=False,
+        allow_patterns=need_files,
+        resume_download=True,
+        token=HF_TOKEN,
+    )
+
+def copy_needed():
+    missing = []
+    for fname in need_files:
+        src = os.path.join(base_dir, fname)
+        dst = os.path.join(turbo_dir, fname)
+        
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+            print(f"📋 Copiado: {fname}")
+        else:
+            missing.append(fname)
+    
+    return missing
+
+ensure_base()
+missing = copy_needed()
 
 if missing:
-    print(f"🔄 Faltan {len(missing)} archivos en turbo → intentando descargarlos…")
-    try:
-        snapshot_download(
-            repo_id="lunahr/csm-1b-safetensors-quants",
-            local_dir="models/csm-1b-turbo",
-            allow_patterns=list(missing),
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            token=os.environ.get("HF_TOKEN"),
-        )
-        print("✅ Metadatos adicionales descargados")
-    except Exception as e:
-        print(f"⚠️ No se pudieron descargar algunos metadatos: {e}")
-        print("💡 Se intentará copiar desde el modelo base")
+    print("❌ Faltan archivos críticos para AutoProcessor:")
+    for f in missing:
+        print(" -", f)
+    sys.exit(1)
 else:
-    print("✅ Todos los metadatos ya están presentes")
+    print("✅ Metadatos del processor/tokenizer copiados al turbo")
 PY
 
-# 2) Si aún faltan, cópialos del modelo "normal"
-for f in tokenizer.json tokenizer_config.json special_tokens_map.json \
-         processor_config.json preprocessor_config.json chat_template.json \
-         generation_config.json; do
-    if [ ! -f "$TURBO_DIR/$f" ] && [ -f "$BASE_DIR/$f" ]; then
-        echo "📥 Copiando $f desde modelo base"
-        cp "$BASE_DIR/$f" "$TURBO_DIR/"
-    fi
-done
-
-# 3) Verificación final
-missing_critical=()
-for f in tokenizer.json processor_config.json config.json; do
-    if [ ! -f "$TURBO_DIR/$f" ]; then
-        missing_critical+=("$f")
-    fi
-done
-
-if [ ${#missing_critical[@]} -gt 0 ]; then
-    echo "❌ Faltan archivos críticos para AutoProcessor:"
-    for f in "${missing_critical[@]}"; do
-        echo "   - $f"
-    done
-    echo "📁 Contenido actual de $TURBO_DIR:"
-    ls -la "$TURBO_DIR/"
+if [ $? -ne 0 ]; then
+    echo "❌ Error completando metadatos del turbo INT8"
     exit 1
 fi
 
-echo "✅ Metadatos del turbo completos"
-echo "📋 Archivos de configuración verificados:"
-ls -la "$TURBO_DIR"/*.json | sed 's/^/   /'
+# Mostrar contenido final
+echo "📁 Contenido actual de $TURBO_DIR:"
+ls -la "$TURBO_DIR"
 
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
