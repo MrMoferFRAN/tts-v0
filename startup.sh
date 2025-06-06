@@ -114,36 +114,98 @@ fi
 
 echo "✅ Dependencias de audio instaladas y verificadas"
 
-# 4. Verificar modelo CSM-1B
+# 4. Verificar / descargar modelo CSM-1B (MÉTODO ROBUSTO CON HUGGINGFACE_HUB)
 echo "🔍 4. Verificando modelo CSM-1B..."
-if [ -d "./models/sesame-csm-1b" ]; then
-    model_size=$(du -h models/sesame-csm-1b/model.safetensors | cut -f1)
+MODEL_DIR="./models/sesame-csm-1b"
+
+# Verificar si ya existe el modelo completo
+if [ -f "$MODEL_DIR/config.json" ] && ls "$MODEL_DIR"/transformers-*-of-*.safetensors 1>/dev/null 2>&1; then
+    model_size=$(du -sh "$MODEL_DIR" | cut -f1)
     echo "✅ Modelo CSM-1B encontrado: $model_size"
+    echo "📋 Archivos safetensors encontrados:"
+    ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
 else
-    echo "❌ Modelo CSM-1B no encontrado"
-    echo "🔄 Descargando modelo CSM-1B..."
+    echo "🔄 Descargando modelo CSM-1B con huggingface_hub (método robusto)..."
     
+    # Asegurar que huggingface_hub esté actualizado
+    pip install --no-cache-dir huggingface_hub --upgrade
+    
+    # Crear directorio models si no existe
     mkdir -p models
-    cd models
     
-    # Install git-lfs if not installed
-    if ! command -v git-lfs &> /dev/null; then
-        echo "📦 Instalando git-lfs..."
-        apt update && apt install -y git-lfs
-        git lfs install
-    fi
-    
-    # Download model
-    git clone https://huggingface.co/sesame/csm-1b sesame-csm-1b
-    cd ..
-    
-    if [ -f "./models/sesame-csm-1b/model.safetensors" ]; then
-        echo "✅ Modelo CSM-1B descargado exitosamente"
-    else
-        echo "❌ Error descargando modelo CSM-1B"
+    # Descargar usando huggingface_hub (más robusto que git-lfs)
+    python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+print("📥 Iniciando descarga del modelo CSM-1B...")
+print("🔗 Repo: sesame/csm-1b")
+print("📁 Destino: models/sesame-csm-1b")
+
+try:
+    snapshot_download(
+        repo_id="sesame/csm-1b",
+        local_dir="models/sesame-csm-1b",
+        local_dir_use_symlinks=False,  # copia real, sin symlinks → evita problemas en contenedores
+        token=os.environ.get("HF_TOKEN"),
+        resume_download=True  # continúa descarga si se interrumpió
+    )
+    print("✅ Descarga completada exitosamente")
+except Exception as e:
+    print(f"❌ Error durante la descarga: {e}")
+    exit(1)
+PY
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Error descargando modelo con huggingface_hub"
         exit 1
     fi
 fi
+
+# Verificación exhaustiva de archivos críticos
+echo "🔍 Verificando integridad del modelo..."
+
+# Verificar archivos safetensors específicos
+if ! ls "$MODEL_DIR"/transformers-*-of-*.safetensors 1>/dev/null 2>&1; then
+    echo "❌ No se han descargado los archivos safetensors"
+    echo "📋 Archivos esperados:"
+    echo "   - transformers-00001-of-00002.safetensors"
+    echo "   - transformers-00002-of-00002.safetensors"
+    echo "📁 Contenido actual del directorio:"
+    ls -la "$MODEL_DIR"/ || echo "Directorio no existe"
+    exit 1
+fi
+
+# Verificar archivos específicos mencionados en el error
+required_files=(
+    "$MODEL_DIR/transformers-00001-of-00002.safetensors"
+    "$MODEL_DIR/transformers-00002-of-00002.safetensors"
+    "$MODEL_DIR/config.json"
+    "$MODEL_DIR/tokenizer.json"
+)
+
+missing_files=()
+for file in "${required_files[@]}"; do
+    if [ ! -f "$file" ]; then
+        missing_files+=("$file")
+    fi
+done
+
+if [ ${#missing_files[@]} -gt 0 ]; then
+    echo "❌ Archivos faltantes:"
+    for file in "${missing_files[@]}"; do
+        echo "   - $file"
+    done
+    exit 1
+fi
+
+echo "✅ Todos los archivos críticos del modelo están presentes:"
+echo "📋 Archivos safetensors verificados:"
+ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
+
+# Mostrar tamaño total del modelo
+model_size=$(du -sh "$MODEL_DIR" | cut -f1)
+echo "📦 Tamaño total del modelo: $model_size"
 
 # 5. Verificar dataset Elise (opcional)
 echo "🔍 5. Verificando dataset Elise..."
@@ -239,13 +301,13 @@ print('✅ CSM imports working correctly')
 "
 fi
 
-# 6. Configurar estructura de directorios
-echo "📁 6. Configurando estructura de directorios..."
+# 7. Configurar estructura de directorios
+echo "📁 7. Configurando estructura de directorios..."
 mkdir -p outputs temp logs voices
 echo "✅ Directorios creados"
 
-# 7. Verificar archivo de voz de referencia
-echo "🔍 7. Verificando archivos de voz de referencia..."
+# 8. Verificar archivo de voz de referencia
+echo "🔍 8. Verificando archivos de voz de referencia..."
 reference_voice_old="voices/fran-fem/Ah, ¿en serio? Vaya, eso debe ser un poco incómodo para tu equipo. Y ¿cómo lo tomaron?.wav"
 reference_voice_new="voices/fran-fem/fran_fem_sample.wav"
 
@@ -288,16 +350,33 @@ else
     echo "💡 El sistema funcionará, pero sin perfil de voz predefinido"
 fi
 
-# 8. Test rápido del sistema
-echo "🔧 8. Probando sistema CSM..."
+# 9. Test robusto del sistema CSM
+echo "🔧 9. Probando sistema CSM..."
 python -c "
 import torch
 from transformers import CsmForConditionalGeneration, AutoProcessor
+import os
 
 print('🔍 Testing CSM system...')
 try:
     model_path = './models/sesame-csm-1b'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Verificar que los archivos específicos existen
+    safetensor_files = [
+        'transformers-00001-of-00002.safetensors',
+        'transformers-00002-of-00002.safetensors'
+    ]
+    
+    print('🔍 Verificando archivos safetensors específicos...')
+    for file in safetensor_files:
+        file_path = os.path.join(model_path, file)
+        if os.path.exists(file_path):
+            size_mb = os.path.getsize(file_path) / (1024*1024)
+            print(f'✅ {file}: {size_mb:.1f} MB')
+        else:
+            print(f'❌ {file}: NO ENCONTRADO')
+            raise FileNotFoundError(f'Archivo crítico faltante: {file}')
     
     print(f'📥 Loading processor from {model_path}...')
     processor = AutoProcessor.from_pretrained(model_path)
@@ -324,28 +403,35 @@ try:
     
 except Exception as e:
     print(f'❌ CSM system test failed: {e}')
+    import traceback
+    traceback.print_exc()
     exit(1)
 "
 
 if [ $? -ne 0 ]; then
     echo "❌ Sistema CSM no funcionó correctamente"
+    echo "🔍 Información de debugging:"
+    echo "📁 Contenido del directorio del modelo:"
+    ls -la "$MODEL_DIR/" || echo "Directorio no accesible"
     exit 1
 fi
 
-# 9. Información del sistema configurado
-echo "📊 9. Información del sistema configurado..."
+# 10. Información del sistema configurado
+echo "📊 10. Información del sistema configurado..."
 echo "============================================================"
 echo "🎤 CSM VOICE CLONING SYSTEM - READY"
 echo "============================================================"
 echo "📦 Sistema: CSM-1B nativo de Transformers"
-echo "🤖 Modelo: models/sesame-csm-1b ($(du -h models/sesame-csm-1b/model.safetensors | cut -f1))"
+echo "🤖 Modelo: models/sesame-csm-1b ($(du -sh models/sesame-csm-1b | cut -f1))"
 echo "🎭 Voces: $(ls voices/ 2>/dev/null | wc -l) perfiles disponibles"
 echo "🔧 API: FastAPI + Uvicorn (voice_api_complete.py)"
 echo "🚀 Puerto: 7860"
+echo "✅ Archivos safetensors verificados:"
+ls -la "$MODEL_DIR"/transformers-*-of-*.safetensors
 echo "============================================================"
 
-# 10. Iniciar API
-echo "🚀 10. Iniciando CSM Voice Cloning API..."
+# 11. Iniciar API
+echo "🚀 11. Iniciando CSM Voice Cloning API..."
 
 # Ejecutar API completa
-python voice_api_complete.py 
+python voice_api_complete.py
