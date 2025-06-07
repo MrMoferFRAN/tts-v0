@@ -18,17 +18,38 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 import tempfile
 import shutil
+from contextlib import asynccontextmanager
 
 import torch
 import torchaudio
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import aiofiles
 from transformers import CsmForConditionalGeneration, AutoProcessor
 import numpy as np
 from pydantic import BaseModel
+
+# Production dependencies
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.middleware import SlowAPIMiddleware
+    SLOWAPI_AVAILABLE = True
+except ImportError:
+    SLOWAPI_AVAILABLE = False
+    print("⚠️ SlowAPI not available, rate limiting disabled. Install with: pip install slowapi")
+
+# Redis for rate limiting (optional)
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
 
 # Generation defaults for CSM model
 GENERATION_DEFAULTS = {
@@ -37,6 +58,30 @@ GENERATION_DEFAULTS = {
     "do_sample": True,      # sampling estocástico activado
     "output_audio": True    # el modelo debe devolver audio WAV
 }
+
+# Production Configuration - Environment Variables
+MAX_CONCURRENT_INFERENCE = int(os.getenv("MAX_CONCURRENT_INFERENCE", "3"))
+INFERENCE_TIMEOUT = int(os.getenv("INFERENCE_TIMEOUT", "120"))  # seconds
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # seconds
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+REDIS_URL = os.getenv("REDIS_URL", None)  # redis://localhost:6379
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Concurrency control
+inference_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INFERENCE)
+
+# Rate limiter setup
+if SLOWAPI_AVAILABLE:
+    if REDIS_AVAILABLE and REDIS_URL:
+        # Use Redis for distributed rate limiting
+        redis_client = redis.from_url(REDIS_URL)
+        limiter = Limiter(key_func=get_remote_address, storage_uri=REDIS_URL)
+    else:
+        # Use in-memory rate limiting
+        limiter = Limiter(key_func=get_remote_address)
+else:
+    limiter = None
 
 # CUDA Compatibility Configuration for RTX 4090 and RTX 6000 Ada
 def setup_cuda_compatibility():
@@ -92,16 +137,56 @@ cuda_available = setup_cuda_compatibility()
 if not hasattr(torch.compiler, 'is_compiling'):
     torch.compiler.is_compiling = lambda: False
 
-# Configuración de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/voice_api.log', mode='a') if Path('logs').exists() else logging.NullHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Production Logging Configuration
+def setup_logging():
+    """Setup production-ready logging with proper formatting and rotation"""
+    # Create logs directory
+    Path("logs").mkdir(exist_ok=True)
+    
+    # Configure root logger
+    log_level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
+    
+    # Format for production with more details
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(name)-15s | %(funcName)-20s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(log_level)
+    
+    # File handler with rotation
+    try:
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            'logs/voice_api.log',
+            maxBytes=50*1024*1024,  # 50MB
+            backupCount=5
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(log_level)
+        handlers = [console_handler, file_handler]
+    except Exception:
+        # Fallback to simple file handler
+        handlers = [console_handler]
+    
+    # Configure logging
+    logging.basicConfig(
+        level=log_level,
+        handlers=handlers,
+        force=True  # Override any existing configuration
+    )
+    
+    # Set third-party loggers to WARNING to reduce noise
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("torch").setLevel(logging.WARNING)
+    
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 # Configuración del entorno adicional
 os.environ.setdefault('HF_TOKEN', '|==>REMOVED')
@@ -518,76 +603,105 @@ class CSMVoiceManager:
     
     def _split_sentences(self, text: str, max_chars: int = 220) -> List[str]:
         """
-        Corta el texto en frases usando puntuación. Si una frase
-        supera `max_chars`, se subdivide por comas o espacios.
+        Divide el texto en oraciones correctas para CSM usando puntuación natural.
         220 caracteres ≈ ~18 tokens de entrada → genera ~0-1s de audio.
         """
         import textwrap
         
-        # 1) Separar en oraciones básicas por puntuación
+        # 1) Separar en oraciones básicas usando puntuación
         sentences = re.split(r'(?<=[.!?¿¡])\s+', text.strip())
         sentences = [s.strip() for s in sentences if s.strip()]
         
-        # 2) Asegurarse de no exceder max_chars
-        result = []
+        # 2) Asegurar que no exceden max_chars
+        final_sentences = []
         for sentence in sentences:
             if len(sentence) <= max_chars:
-                result.append(sentence)
+                final_sentences.append(sentence)
             else:
-                # Fragmentar por comas/espacios si es muy largo
+                # Fragmentar por comas o espacios si es muy larga
                 chunks = textwrap.wrap(sentence, width=max_chars, break_long_words=False)
-                result.extend(chunks)
+                final_sentences.extend(chunks)
         
-        logger.info(f"📝 Split text into {len(result)} sentences (max {max_chars} chars each)")
-        return result
+        logger.info(f"📝 Split text into {len(final_sentences)} sentences (avg: {len(text)/len(final_sentences):.0f} chars each)")
+        return final_sentences
+    
+    def _enhance_prosody_markers(self, sentences: List[str]) -> str:
+        """
+        Combina oraciones con marcadores de prosodia mejorados para que CSM
+        pueda interpretar mejor las pausas y entonación.
+        """
+        # Unir oraciones preservando la estructura prosódica
+        enhanced_text = ""
+        
+        for i, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            
+            # Agregar la oración
+            enhanced_text += sentence
+            
+            # Agregar pausas apropiadas entre oraciones
+            if i < len(sentences) - 1:  # No agregar pausa después de la última oración
+                # Si la oración termina con puntuación fuerte, agregar pausa larga
+                if sentence.endswith(('.', '!', '?', '¿', '¡')):
+                    enhanced_text += "  "  # Doble espacio para pausa más larga
+                else:
+                    enhanced_text += " "   # Espacio simple para pausa corta
+        
+        return enhanced_text.strip()
     
     def _build_conversation(self, reference_profile: VoiceProfile, sentences: List[str]) -> List[Dict]:
         """
-        Construye la conversación CSM correcta con referencia de voz + oraciones.
-        - reference_profile: perfil con audio + transcripción de referencia
-        - sentences: lista de oraciones ya segmentadas
+        Construye la conversación correcta para CSM: 
+        - Primer mensaje: referencia con audio + transcripción
+        - Segundo mensaje: todas las oraciones concatenadas (solo text)
+        
+        CSM requiere que cada mensaje (excepto el último) tenga text + audio.
         """
         try:
-            # Cargar y procesar audio de referencia
+            # Cargar audio de referencia → np.float32 mono 24 kHz
             waveform, sample_rate = torchaudio.load(reference_profile.audio_path)
             
-            # Normalizar a 24kHz mono
+            # Resample a 24kHz si es necesario
             if sample_rate != 24000:
                 resampler = torchaudio.transforms.Resample(sample_rate, 24000)
                 waveform = resampler(waveform)
             
-            if waveform.shape[0] > 1:  # estéreo → mono
+            # Convertir a mono si es estéreo
+            if waveform.shape[0] > 1:
                 waveform = waveform.mean(dim=0, keepdim=True)
             
             # Convertir a numpy float32
             ref_audio = waveform.squeeze().cpu().numpy().astype(np.float32)
             
-            # Construir conversación: primer elemento con referencia de voz
-            conversation = [{
-                "role": "0",
-                "content": [
-                    {"type": "text", "text": reference_profile.transcription},
-                    {"type": "audio", "path": ref_audio}
-                ]
-            }]
+            # Combinar oraciones con marcadores de prosodia mejorados
+            # CSM puede interpretar espacios y puntuación para pausas naturales
+            full_text = self._enhance_prosody_markers(sentences)
             
-            # Agregar cada oración como turno separado del mismo hablante
-            conversation.extend([
+            # Construir conversación CSM compatible:
+            # 1. Mensaje de referencia (text + audio)
+            # 2. Mensaje objetivo (solo text) - último mensaje puede ser solo text
+            conversation = [
                 {
                     "role": "0",
-                    "content": [{"type": "text", "text": sentence}]
+                    "content": [
+                        {"type": "text", "text": reference_profile.transcription},
+                        {"type": "audio", "path": ref_audio}
+                    ]
+                },
+                {
+                    "role": "0",
+                    "content": [{"type": "text", "text": full_text}]
                 }
-                for sentence in sentences
-            ])
+            ]
             
-            logger.info(f"🎯 Built conversation: 1 reference + {len(sentences)} sentences")
+            logger.info(f"🗣️ Built CSM conversation: reference + {len(sentences)} sentences combined")
+            logger.info(f"📝 Target text length: {len(full_text)} chars")
             return conversation
             
         except Exception as e:
             logger.error(f"❌ Failed to build conversation: {e}")
             raise
     
-
     def clone_voice_with_sentences(
         self, 
         text: str, 
@@ -600,16 +714,16 @@ class CSMVoiceManager:
         turbo: bool = True
     ) -> np.ndarray:
         """
-        Clona voz con división inteligente en oraciones usando el patrón CSM correcto.
-        UNA sola llamada al modelo con conversación completa.
+        Clona voz con división inteligente en oraciones usando conversación CSM correcta.
+        Una sola llamada al modelo con toda la conversación para máxima eficiencia.
         """
         try:
-            # Validar que se requiere voice_id para el contexto
+            # Validar que se requiere voice_id para referencia
             if not voice_id or voice_id not in self.voice_collections:
-                logger.warning("⚠️ No voice_id provided, falling back to normal generation")
+                logger.warning("⚠️ No voice_id provided or not found, falling back to normal generation")
                 return self.clone_voice(
-                    text=text, 
-                    voice_id=voice_id, 
+                    text=text,
+                    voice_id=voice_id,
                     sample_name=sample_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -618,17 +732,17 @@ class CSMVoiceManager:
             
             collection = self.voice_collections[voice_id]
             if not collection.profiles:
-                raise ValueError(f"Voice collection '{voice_id}' has no profiles")
+                logger.warning("⚠️ No voice profiles found, falling back to normal generation")
+                return self.clone_voice(
+                    text=text,
+                    voice_id=voice_id,
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    turbo=turbo
+                )
             
-            # Seleccionar perfil de referencia
-            reference_profile = None
-            if sample_name:
-                reference_profile = next((p for p in collection.profiles if p.name == sample_name), None)
-            
-            if not reference_profile:
-                reference_profile = collection.profiles[0]  # Usar el primero disponible
-            
-            # Si el texto es corto o la división está deshabilitada, usar método normal
+            # Si la división está deshabilitada o el texto es corto, usar método normal
             if not enable_sentence_splitting or len(text) <= max_chars:
                 logger.info("🎯 Using single-pass generation (text too short or splitting disabled)")
                 return self.clone_voice(
@@ -643,10 +757,10 @@ class CSMVoiceManager:
             # 1) Dividir texto en oraciones
             sentences = self._split_sentences(text, max_chars)
             
-            if len(sentences) == 1:
+            if len(sentences) <= 1:
                 logger.info("🎯 Single sentence after splitting, using normal generation")
                 return self.clone_voice(
-                    text=sentences[0], 
+                    text=sentences[0] if sentences else text, 
                     voice_id=voice_id, 
                     sample_name=sample_name,
                     temperature=temperature,
@@ -654,11 +768,20 @@ class CSMVoiceManager:
                     turbo=turbo
                 )
             
-            # 2) Construir conversación completa
-            logger.info(f"🎵 Building conversation with {len(sentences)} sentences")
+            # 2) Obtener perfil de referencia
+            reference_profile = None
+            if sample_name:
+                reference_profile = next((p for p in collection.profiles if p.name == sample_name), None)
+            
+            if not reference_profile:
+                reference_profile = collection.profiles[0]  # Usar el primero disponible
+            
+            # 3) Construir conversación completa
             conversation = self._build_conversation(reference_profile, sentences)
             
-            # 3) Procesar conversación con el modelo
+            # 4) Procesar con CSM en una sola llamada
+            logger.info(f"🎭 Generating with prosody-aware text: {len(sentences)} sentences → enhanced punctuation")
+            
             inputs = self.processor.apply_chat_template(
                 conversation,
                 tokenize=True,
@@ -672,47 +795,23 @@ class CSMVoiceManager:
                     if value.dtype != model_dtype:
                         inputs[key] = value.to(dtype=model_dtype)
             
-            # 4) Inferencia con parámetros sensatos
-            logger.info(f"🚀 Generating audio with sentence conversation ({len(sentences)} sentences)")
-            
-            try:
-                with torch.no_grad():
-                    # Limpiar caché CUDA antes de la generación
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    
-                    outputs = self.model.generate(
-                        **inputs,
-                        output_audio=GENERATION_DEFAULTS["output_audio"],
-                        max_new_tokens=max_tokens,
-                        temperature=temperature,
-                        do_sample=GENERATION_DEFAULTS["do_sample"]
-                    )
+            # 5) Generar audio con una sola llamada
+            with torch.no_grad():
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 
-            except RuntimeError as cuda_error:
-                if "CUDA" in str(cuda_error):
-                    logger.warning(f"⚠️ CUDA error during sentence generation: {cuda_error}")
-                    logger.info("🔄 Attempting CUDA recovery...")
-                    
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                    
-                    # Retry con configuración más conservadora
-                    with torch.no_grad():
-                        outputs = self.model.generate(
-                            **inputs,
-                            output_audio=GENERATION_DEFAULTS["output_audio"],
-                            max_new_tokens=min(max_tokens, 2048),
-                            temperature=temperature,
-                            do_sample=GENERATION_DEFAULTS["do_sample"],
-                            use_cache=False
-                        )
-                    logger.info("✅ Generation successful after CUDA recovery")
-                else:
-                    raise cuda_error
+                # Ajustar max_tokens basado en número de oraciones
+                adjusted_tokens = min(max_tokens, len(sentences) * 400)  # ~400 tokens ≈ 1s audio
+                
+                outputs = self.model.generate(
+                    **inputs, 
+                    output_audio=GENERATION_DEFAULTS["output_audio"],
+                    max_new_tokens=adjusted_tokens,
+                    temperature=temperature,
+                    do_sample=GENERATION_DEFAULTS["do_sample"]
+                )
             
-            # 5) Extraer y procesar audio
+            # 6) Extraer y procesar audio
             if hasattr(outputs, 'audio_values'):
                 audio = outputs.audio_values
             elif isinstance(outputs, dict) and 'audio_values' in outputs:
@@ -725,12 +824,16 @@ class CSMVoiceManager:
             # Convertir a numpy
             if isinstance(audio, torch.Tensor):
                 audio = audio.float().cpu().numpy()
-            elif isinstance(audio, list) and len(audio) > 0:
-                audio = audio[0]
-                if isinstance(audio, torch.Tensor):
-                    audio = audio.float().cpu().numpy()
+            elif isinstance(audio, list):
+                if len(audio) > 0:
+                    audio = audio[0]
+                    if isinstance(audio, torch.Tensor):
+                        audio = audio.float().cpu().numpy()
+                    else:
+                        audio = np.array(audio, dtype=np.float32)
                 else:
-                    audio = np.array(audio, dtype=np.float32)
+                    logger.warning("⚠️ Model returned empty audio, generating silence")
+                    audio = np.zeros(24000, dtype=np.float32)
             else:
                 audio = np.array(audio, dtype=np.float32)
             
@@ -738,16 +841,16 @@ class CSMVoiceManager:
             if len(audio.shape) > 1:
                 audio = audio.flatten()
             
-            # Normalizar
-            if np.max(np.abs(audio)) > 0:
-                audio = audio / np.max(np.abs(audio)) * 0.95
+            if np.max(np.abs(audio)) > 1.0:
+                audio = audio / np.max(np.abs(audio))
             
-            total_duration = len(audio) / 24000
+            duration = len(audio) / 24000
             
-            logger.info(f"✅ Sentence-based generation complete:")
-            logger.info(f"   📊 Sentences: {len(sentences)}, Duration: {total_duration:.2f}s")
-            logger.info(f"   🎯 Audio shape: {audio.shape}")
-            logger.info(f"   💡 Used single model call with full conversation context")
+            logger.info(f"✅ Prosody-enhanced generation complete:")
+            logger.info(f"   📊 Original sentences: {len(sentences)}, Duration: {duration:.2f}s")
+            logger.info(f"   🎯 Reference: {voice_id}/{reference_profile.name}")
+            logger.info(f"   🎭 Enhanced punctuation preserved for natural prosody")
+            logger.info(f"   🚀 Single CSM conversation - optimal efficiency")
             
             return audio
             
@@ -945,42 +1048,132 @@ class CSMVoiceManager:
             logger.error(f"❌ Voice cloning failed: {e}")
             raise
 
-# Inicializar manager global
-voice_manager = None
+# Production Helper Functions
+async def safe_inference_call(func, *args, **kwargs):
+    """
+    Wrapper seguro para llamadas de inferencia con:
+    - Control de concurrencia (semáforo)
+    - Timeout global
+    - Ejecución en thread pool
+    - Logging detallado
+    """
+    client_info = kwargs.pop('client_info', 'unknown')
+    
+    async with inference_semaphore:
+        try:
+            logger.info(f"🚀 Starting inference for {client_info} | Semaphore: {inference_semaphore._value}/{MAX_CONCURRENT_INFERENCE}")
+            
+            # Execute heavy computation in thread pool to not block event loop
+            result = await asyncio.wait_for(
+                asyncio.to_thread(func, *args, **kwargs),
+                timeout=INFERENCE_TIMEOUT
+            )
+            
+            logger.info(f"✅ Inference completed for {client_info}")
+            return result
+            
+        except asyncio.TimeoutError:
+            logger.error(f"⏰ Inference timeout ({INFERENCE_TIMEOUT}s) for {client_info}")
+            raise HTTPException(
+                status_code=408, 
+                detail=f"Inference timeout after {INFERENCE_TIMEOUT} seconds. Try with shorter text or lower max_tokens."
+            )
+        except Exception as e:
+            logger.exception(f"❌ Inference failed for {client_info}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal inference error: {str(e)}"
+            )
 
-def get_voice_manager():
-    """Obtiene la instancia global del manager"""
-    global voice_manager
-    if voice_manager is None:
-        voice_manager = CSMVoiceManager()
-    return voice_manager
+def get_client_info(request: Request) -> str:
+    """Extract client information for logging"""
+    client_ip = getattr(request.client, 'host', 'unknown') if request.client else 'unknown'
+    user_agent = request.headers.get('user-agent', 'unknown')[:50]
+    return f"{client_ip} | {user_agent}"
 
-# Configurar FastAPI
+# Application state manager
+class AppState:
+    def __init__(self):
+        self.voice_manager: Optional[CSMVoiceManager] = None
+        self.startup_time: Optional[datetime] = None
+        self.is_ready: bool = False
+
+app_state = AppState()
+
+# Production Lifecycle Management
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle manager for production"""
+    # Startup
+    logger.info("🚀 Starting Voice Cloning API - Production Mode")
+    logger.info(f"📊 Configuration: max_concurrent={MAX_CONCURRENT_INFERENCE}, timeout={INFERENCE_TIMEOUT}s, rate_limit={RATE_LIMIT_PER_MINUTE}/min")
+    
+    try:
+        app_state.startup_time = datetime.now()
+        
+        # Initialize voice manager in startup to avoid cold starts
+        logger.info("🔄 Initializing CSM Voice Manager...")
+        app_state.voice_manager = CSMVoiceManager()
+        
+        # Warm-up: load basic components
+        logger.info("🔥 Warming up model components...")
+        collections_count = len(app_state.voice_manager.voice_collections)
+        logger.info(f"✅ Voice manager ready: {collections_count} voice collections loaded")
+        
+        app_state.is_ready = True
+        logger.info("✅ Application startup complete - Ready for production traffic")
+        
+        yield  # Application runs here
+        
+    except Exception as e:
+        logger.exception(f"❌ Startup failed: {e}")
+        app_state.is_ready = False
+        raise
+    finally:
+        # Shutdown
+        logger.info("🛑 Shutting down Voice Cloning API")
+        app_state.is_ready = False
+        
+        # Clean GPU memory if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("🧹 GPU memory cleared")
+
+# FastAPI Production Configuration
 app = FastAPI(
-    title="🎤 Voice Cloning API Complete - CSM-1B Turbo",
-    description="API completa de clonación de voz con gestión avanzada de perfiles, modo turbo y división inteligente en oraciones para prosodia mejorada",
-    version="3.2.0"
+    title="🎤 Voice Cloning API - Production Ready",
+    description="Production-grade voice cloning API with CSM-1B, featuring concurrency control, rate limiting, and optimized inference",
+    version="4.0.0-prod",
+    lifespan=lifespan
 )
 
+# Production Middleware Stack
+# 1. Trusted Host Protection
+if ALLOWED_HOSTS != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+
+# 2. CORS (should be early in middleware stack)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    """Inicialización del servidor"""
-    logger.info("🚀 Starting Voice Cloning API Complete...")
-    
-    try:
-        get_voice_manager()
-        logger.info("✅ Voice Cloning API Complete ready")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize voice manager: {e}")
-        raise
+# 3. GZip Compression
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# 4. Rate Limiting
+if SLOWAPI_AVAILABLE and limiter:
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+    logger.info(f"✅ Rate limiting enabled: {RATE_LIMIT_PER_MINUTE} requests per {RATE_LIMIT_WINDOW}s per IP")
+else:
+    logger.warning("⚠️ Rate limiting disabled - install slowapi for production use")
+
+# Health check and utility endpoints
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -1011,13 +1204,13 @@ async def home():
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>🎤 Voice Cloning API Complete</h1>
-                    <div class="subtitle">Powered by CSM-1B Turbo • Optimizado RTX 4090/6000 Ada • Inferencia Ultrarrápida</div>
+                    <h1>🎤 Voice Cloning API - Production Ready</h1>
+                    <div class="subtitle">CSM-1B Turbo • Rate Limited • Concurrency Controlled • Production Grade</div>
                 </div>
                 
                 <div class="section">
                     <div class="status">
-                        ✅ API funcionando perfectamente • Sistema de carpetas organizadas
+                        ✅ Production API Ready • Concurrency Control • Rate Limiting • Auto-scaling Ready
                     </div>
                 </div>
                 
@@ -1037,8 +1230,8 @@ async def home():
                             <p>Selección específica de muestras para mejor calidad</p>
                         </div>
                         <div class="feature">
-                            <h3>🚀 Modo Turbo</h3>
-                            <p>Modelo cuantizado int8 para inferencia ultrarrápida</p>
+                            <h3>🚀 Production Ready</h3>
+                            <p>Rate limiting, concurrency control, timeouts, health checks</p>
                         </div>
                         <div class="feature">
                             <h3>📊 Análisis Completo</h3>
@@ -1103,19 +1296,11 @@ async def home():
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
                     </div>
                     <div class="endpoint">
-                        # Clonación con prosodia mejorada (división inteligente CSM)<br>
+                        # Clonación con prosodia mejorada (división inteligente)<br>
                         curl -X POST 'http://localhost:7860/clone_with_prosody' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Este es un texto largo. Tiene varias oraciones! ¿Mejorará la prosodia?' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'max_chars=220'
-                    </div>
-                    <div class="endpoint">
-                        # Clonación normal con sentence splitting habilitado<br>
-                        curl -X POST 'http://localhost:7860/clone' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto con múltiples oraciones. Cada una mejora la prosodia.' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'enable_sentence_splitting=true' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'max_chars=220'
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'max_chunk_size=100'
                     </div>
                 </div>
             </div>
@@ -1125,54 +1310,90 @@ async def home():
 
 @app.get("/health")
 async def health_check():
-    """Health check mejorado"""
+    """Production health check - Simple and fast for K8s/LB"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
     try:
-        manager = get_voice_manager()
+        # Basic health indicators
+        voice_count = len(app_state.voice_manager.voice_collections)
         gpu_available = torch.cuda.is_available()
-        
-        # Estadísticas detalladas
-        total_voices = len(manager.voice_collections)
-        total_samples = sum(len(collection.profiles) for collection in manager.voice_collections.values())
-        
-        gpu_info = {}
-        if gpu_available:
-            gpu_props = torch.cuda.get_device_properties(0)
-            gpu_info = {
-                "name": gpu_props.name,
-                "memory_gb": gpu_props.total_memory / 1024**3,
-                "memory_used_gb": torch.cuda.memory_allocated() / 1024**3
-            }
+        uptime = (datetime.now() - app_state.startup_time).total_seconds() if app_state.startup_time else 0
         
         return {
             "status": "healthy",
-            "turbo_model": {
-                "loaded": manager.model is not None,
-                "processor_loaded": manager.processor is not None,
-                "path": manager.turbo_model_path,
-                "available": True,
-                "is_primary": True,
-                "optimizations": "memory_optimized_float32"
-            },
-            "normal_model": {
-                "loaded": False,
-                "available": False,
-                "note": "Only turbo model is loaded for maximum performance"
-            },
+            "uptime_seconds": int(uptime),
+            "voice_collections": voice_count,
             "gpu_available": gpu_available,
+            "concurrent_slots": f"{inference_semaphore._value}/{MAX_CONCURRENT_INFERENCE}",
+            "version": "4.0.0-prod"
+        }
+    except Exception as e:
+        logger.exception("Health check failed")
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check for monitoring/debugging"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+        
+    try:
+        manager = app_state.voice_manager
+        gpu_available = torch.cuda.is_available()
+        
+        # Detailed statistics
+        total_voices = len(manager.voice_collections)
+        total_samples = sum(len(collection.profiles) for collection in manager.voice_collections.values())
+        uptime = (datetime.now() - app_state.startup_time).total_seconds() if app_state.startup_time else 0
+        
+        gpu_info = {}
+        if gpu_available:
+            try:
+                gpu_props = torch.cuda.get_device_properties(0)
+                gpu_info = {
+                    "name": gpu_props.name,
+                    "memory_total_gb": round(gpu_props.total_memory / 1024**3, 1),
+                    "memory_used_gb": round(torch.cuda.memory_allocated() / 1024**3, 1),
+                    "compute_capability": f"{gpu_props.major}.{gpu_props.minor}"
+                }
+            except Exception:
+                gpu_info = {"error": "Could not get GPU info"}
+        
+        return {
+            "status": "healthy",
+            "uptime_seconds": int(uptime),
+            "startup_time": app_state.startup_time.isoformat() if app_state.startup_time else None,
+            "model": {
+                "loaded": manager.model is not None,
+                "device": manager.device,
+                "path": manager.turbo_model_path
+            },
             "gpu_info": gpu_info,
             "voice_collections": total_voices,
             "total_voice_samples": total_samples,
-            "device": manager.device,
-            "voices_directory": str(manager.voices_dir)
+            "concurrency": {
+                "max_concurrent": MAX_CONCURRENT_INFERENCE,
+                "available_slots": inference_semaphore._value,
+                "inference_timeout": INFERENCE_TIMEOUT
+            },
+            "rate_limiting": {
+                "enabled": SLOWAPI_AVAILABLE and limiter is not None,
+                "per_minute": RATE_LIMIT_PER_MINUTE if SLOWAPI_AVAILABLE else None
+            }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+        logger.exception("Detailed health check failed")
+        raise HTTPException(status_code=500, detail=f"Detailed health check failed: {str(e)}")
 
 @app.get("/voices")
 async def list_voice_collections():
     """Lista todas las colecciones de voces"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         collections_summary = {}
         for voice_id, collection in manager.voice_collections.items():
@@ -1203,8 +1424,11 @@ async def list_voice_collections():
 @app.get("/voices/{voice_id}")
 async def get_voice_collection(voice_id: str):
     """Obtiene detalles de una colección de voz específica"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         if voice_id not in manager.voice_collections:
             raise HTTPException(status_code=404, detail=f"Voice collection '{voice_id}' not found")
@@ -1219,14 +1443,21 @@ async def get_voice_collection(voice_id: str):
 
 @app.post("/voices/{voice_id}/upload")
 async def upload_voice_sample(
+    request: Request,
     voice_id: str,
     audio_file: UploadFile = File(..., description="Audio file"),
     transcription: Optional[str] = Form(None, description="Audio transcription (optional - uses filename if not provided)"),
     language: str = Form("es", description="Language code")
 ):
     """Sube una muestra de audio para una voz específica"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
+    client_info = get_client_info(request)
+    logger.info(f"📤 Upload request for voice '{voice_id}' from {client_info}")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         # Validar archivo de audio
         valid_extensions = {'.wav', '.mp3', '.flac', '.ogg', '.m4a'}
@@ -1267,7 +1498,9 @@ async def upload_voice_sample(
         raise HTTPException(status_code=500, detail=f"Voice upload failed: {str(e)}")
 
 @app.post("/clone")
+@limiter.limit(f"{RATE_LIMIT_PER_MINUTE}/minute") if limiter else lambda x: x
 async def clone_voice_endpoint(
+    request: Request,
     text: str = Form(..., description="Text to synthesize"),
     voice_id: Optional[str] = Form(None, description="Voice collection ID"),
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
@@ -1275,12 +1508,18 @@ async def clone_voice_endpoint(
     max_tokens: int = Form(GENERATION_DEFAULTS["max_tokens"], description="Maximum tokens to generate (higher = longer audio, max ~25000 for 3min)"),
     turbo: bool = Form(False, description="Use turbo mode (optimized model for faster inference)"),
     enable_sentence_splitting: bool = Form(True, description="Enable smart sentence splitting for better prosody"),
-    max_chars: int = Form(220, description="Maximum characters per sentence when using sentence splitting"),
+    max_chunk_size: int = Form(200, description="Maximum characters per chunk when using sentence splitting"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
-    """Clona una voz con el texto especificado - ahora con modo turbo"""
+    """Clona una voz con el texto especificado - Production ready with concurrency control"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
+    client_info = get_client_info(request)
+    logger.info(f"🎤 Clone request from {client_info}: {len(text)} chars, voice_id={voice_id}")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         # Validar voice_id si se proporciona
         if voice_id and voice_id not in manager.voice_collections:
@@ -1293,34 +1532,38 @@ async def clone_voice_endpoint(
         if max_tokens < 64:
             raise HTTPException(status_code=400, detail="max_tokens must be at least 64 for meaningful audio generation")
         
-        # Validar max_chars
-        if max_chars < 50:
-            raise HTTPException(status_code=400, detail="max_chars must be at least 50 characters")
-        if max_chars > 500:
-            raise HTTPException(status_code=400, detail="max_chars cannot exceed 500 characters")
+        # Validar max_chunk_size
+        if max_chunk_size < 50:
+            raise HTTPException(status_code=400, detail="max_chunk_size must be at least 50 characters")
+        if max_chunk_size > 1000:
+            raise HTTPException(status_code=400, detail="max_chunk_size cannot exceed 1000 characters")
         
-        # Generar audio con o sin división en oraciones
-        if enable_sentence_splitting and len(text) > max_chars:
-            logger.info(f"🎵 Using sentence splitting (max {max_chars} chars per sentence)")
-            audio = manager.clone_voice_with_sentences(
+        # Generar audio con o sin división en oraciones (con control de concurrencia)
+        if enable_sentence_splitting and len(text) > max_chunk_size:
+            logger.info(f"🎵 Using sentence splitting (max {max_chunk_size} chars per sentence)")
+            audio = await safe_inference_call(
+                manager.clone_voice_with_sentences,
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 enable_sentence_splitting=enable_sentence_splitting,
-                max_chars=max_chars,
+                max_chars=max_chunk_size,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                turbo=turbo
+                turbo=turbo,
+                client_info=client_info
             )
         else:
             logger.info("🎯 Using single-pass generation")
-            audio = manager.clone_voice(
+            audio = await safe_inference_call(
+                manager.clone_voice,
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                turbo=turbo
+                turbo=turbo,
+                client_info=client_info
             )
         
         # Crear nombre de archivo único
@@ -1361,7 +1604,9 @@ async def clone_voice_endpoint(
         raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
 
 @app.post("/clone_extended")
+@limiter.limit(f"{max(RATE_LIMIT_PER_MINUTE//2, 1)}/minute") if limiter else lambda x: x
 async def clone_voice_extended(
+    request: Request,
     text: str = Form(..., description="Text to synthesize (can be very long)"),
     voice_id: Optional[str] = Form(None, description="Voice collection ID"),
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
@@ -1369,12 +1614,18 @@ async def clone_voice_extended(
     temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature"),
     turbo: bool = Form(True, description="Use turbo mode for faster generation"),
     enable_sentence_splitting: bool = Form(True, description="Enable smart sentence splitting for better prosody"),
-    max_chars: int = Form(200, description="Maximum characters per sentence when using sentence splitting"),
+    max_chunk_size: int = Form(150, description="Maximum characters per chunk when using sentence splitting"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
     """Genera audio extendido dividiendo el texto en segmentos para mayor duración"""
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
+    client_info = get_client_info(request)
+    logger.info(f"📏 Extended clone request from {client_info}: {len(text)} chars, target={target_duration}s")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         # Validar voice_id si se proporciona
         if voice_id and voice_id not in manager.voice_collections:
@@ -1391,28 +1642,32 @@ async def clone_voice_extended(
         
         logger.info(f"🎯 Extended generation: target={target_duration}s, estimated_tokens={estimated_tokens}")
         
-        # Generar audio usando tokens estimados con división inteligente
-        if enable_sentence_splitting and len(text) > max_chars:
-            logger.info(f"🎵 Extended generation with sentence splitting (max {max_chars} chars per sentence)")
-            audio = manager.clone_voice_with_sentences(
+        # Generar audio usando tokens estimados con división inteligente (con control de concurrencia)
+        if enable_sentence_splitting and len(text) > max_chunk_size:
+            logger.info(f"🎵 Extended generation with sentence splitting (max {max_chunk_size} chars per sentence)")
+            audio = await safe_inference_call(
+                manager.clone_voice_with_sentences,
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 enable_sentence_splitting=enable_sentence_splitting,
-                max_chars=max_chars,
+                max_chars=max_chunk_size,
                 temperature=temperature,
                 max_tokens=estimated_tokens,
-                turbo=turbo
+                turbo=turbo,
+                client_info=client_info
             )
         else:
             logger.info("🎯 Extended generation with single-pass")
-            audio = manager.clone_voice(
+            audio = await safe_inference_call(
+                manager.clone_voice,
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 temperature=temperature,
                 max_tokens=estimated_tokens,
-                turbo=turbo
+                turbo=turbo,
+                client_info=client_info
             )
         
         # Calcular duración real
@@ -1461,14 +1716,16 @@ async def clone_voice_extended(
         raise HTTPException(status_code=500, detail=f"Extended voice cloning failed: {str(e)}")
 
 @app.post("/clone_with_prosody")
+@limiter.limit(f"{RATE_LIMIT_PER_MINUTE}/minute") if limiter else lambda x: x
 async def clone_voice_with_prosody(
+    request: Request,
     text: str = Form(..., description="Text to synthesize with enhanced prosody"),
     voice_id: Optional[str] = Form(None, description="Voice collection ID"),
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
     temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature"),
     max_tokens: int = Form(GENERATION_DEFAULTS["max_tokens"], description="Maximum tokens to generate"),
     turbo: bool = Form(True, description="Use turbo mode for faster generation"),
-    max_chars: int = Form(220, description="Maximum characters per sentence (50-300)"),
+    max_chunk_size: int = Form(150, description="Maximum characters per chunk (50-300)"),
     crossfade_duration: float = Form(0.05, description="Crossfade duration between segments in seconds"),
     use_parallel_processing: bool = Form(True, description="Enable parallel chunk processing when beneficial"),
     output_format: str = Form("wav", description="Output format (wav)")
@@ -1477,42 +1734,55 @@ async def clone_voice_with_prosody(
     Endpoint especializado para clonación de voz con división inteligente en oraciones.
     Optimizado para mejor prosodia con impacto mínimo en latencia.
     """
+    if not app_state.is_ready or not app_state.voice_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    
+    client_info = get_client_info(request)
+    logger.info(f"🎭 Prosody clone request from {client_info}: {len(text)} chars, chunk_size={max_chunk_size}")
+    
     try:
-        manager = get_voice_manager()
+        manager = app_state.voice_manager
         
         # Validar voice_id si se proporciona
         if voice_id and voice_id not in manager.voice_collections:
             raise HTTPException(status_code=404, detail=f"Voice collection '{voice_id}' not found")
         
         # Validaciones específicas para prosody
-        if max_chars < 50:
-            raise HTTPException(status_code=400, detail="max_chars must be at least 50 characters")
-        if max_chars > 300:
-            raise HTTPException(status_code=400, detail="max_chars cannot exceed 300 characters")
+        if max_chunk_size < 50:
+            raise HTTPException(status_code=400, detail="max_chunk_size must be at least 50 characters")
+        if max_chunk_size > 300:
+            raise HTTPException(status_code=400, detail="max_chunk_size cannot exceed 300 characters")
+        
+        if crossfade_duration < 0.01:
+            raise HTTPException(status_code=400, detail="crossfade_duration must be at least 0.01 seconds")
+        if crossfade_duration > 0.2:
+            raise HTTPException(status_code=400, detail="crossfade_duration cannot exceed 0.2 seconds")
         
         if len(text.strip()) == 0:
             raise HTTPException(status_code=400, detail="Text cannot be empty")
         
-        # Generar audio con configuraciones de prosodia
-        logger.info(f"🎭 Prosody-enhanced generation: {len(text)} chars, max_chars: {max_chars}")
+        # Generar audio con configuraciones de prosodia (con control de concurrencia)
+        logger.info(f"🎭 Prosody-enhanced generation: {len(text)} chars, max_chunk: {max_chunk_size}")
         
         # Usar siempre división en oraciones para este endpoint
-        audio = manager.clone_voice_with_sentences(
+        audio = await safe_inference_call(
+            manager.clone_voice_with_sentences,
             text=text,
             voice_id=voice_id,
             sample_name=sample_name,
             enable_sentence_splitting=True,
-            max_chars=max_chars,
+            max_chars=max_chunk_size,
             temperature=temperature,
             max_tokens=max_tokens,
-            turbo=turbo
+            turbo=turbo,
+            client_info=client_info
         )
         
         # Crear nombre de archivo único
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
         voice_suffix = f"_{voice_id}" if voice_id else "_default"
         sample_suffix = f"_{sample_name}" if sample_name else ""
-        filename = f"prosody{voice_suffix}{sample_suffix}_{max_chars}ch_{text_hash}.{output_format}"
+        filename = f"prosody{voice_suffix}{sample_suffix}_{max_chunk_size}ch_{text_hash}.{output_format}"
         
         output_path = Path("outputs") / filename
         
@@ -1532,10 +1802,10 @@ async def clone_voice_with_prosody(
         
         # Calcular estadísticas
         duration = len(audio_numpy) / 24000
-        estimated_sentences = len(text) // max_chars + (1 if len(text) % max_chars > 0 else 0)
+        estimated_chunks = len(text) // max_chunk_size + (1 if len(text) % max_chunk_size > 0 else 0)
         
         logger.info(f"✅ Prosody-enhanced audio generated: {output_path}")
-        logger.info(f"📊 Duration: {duration:.2f}s, Estimated sentences: {estimated_sentences}")
+        logger.info(f"📊 Duration: {duration:.2f}s, Estimated chunks: {estimated_chunks}")
         
         return FileResponse(
             path=output_path,
@@ -1543,8 +1813,8 @@ async def clone_voice_with_prosody(
             filename=filename,
             headers={
                 "X-Audio-Duration": str(duration),
-                "X-Sentence-Size": str(max_chars),
-                "X-Estimated-Sentences": str(estimated_sentences),
+                "X-Chunk-Size": str(max_chunk_size),
+                "X-Estimated-Chunks": str(estimated_chunks),
                 "X-Prosody-Enhanced": "true"
             }
         )
@@ -1576,14 +1846,6 @@ if __name__ == "__main__":
         sys.exit(1)
     
     try:
-        # Inicializar sistema
-        logger.info("🎤 Setting up voice management system...")
-        manager = get_voice_manager()
-        
-        logger.info(f"📢 Loaded {len(manager.voice_collections)} voice collections")
-        for voice_id, collection in manager.voice_collections.items():
-            logger.info(f"  • {voice_id}: {collection.total_samples} samples")
-        
         logger.info("🚀 Starting server on http://0.0.0.0:7860")
         logger.info("📖 API Documentation: http://0.0.0.0:7860/docs")
         
