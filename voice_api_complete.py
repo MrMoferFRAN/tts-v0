@@ -2,7 +2,6 @@
 """
 Voice Cloning API Completa - CSM-1B
 API robusta con estructura de carpetas organizadas por voz
-Version optimizada con controladores avanzados de generación
 """
 
 import os
@@ -11,12 +10,14 @@ import logging
 import traceback
 import json
 import hashlib
+import re
+import asyncio
+import concurrent.futures
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 import tempfile
 import shutil
-import re
 
 import torch
 import torchaudio
@@ -29,53 +30,29 @@ from transformers import CsmForConditionalGeneration, AutoProcessor
 import numpy as np
 from pydantic import BaseModel
 
-# -----------------------------------------
-# NUEVOS PARÁMETROS GLOBALES DE GENERACIÓN
-# -----------------------------------------
-# Valores pensados para español neutro con buena claridad en CSM-1B.
+# Generation defaults for CSM model
 GENERATION_DEFAULTS = {
-    "do_sample": True,
-    "temperature": 0.8,  # Volver al valor original más conservador
-    "top_p": 0.9,
-    "top_k": 50,
-    "repetition_penalty": 1.0,  # Desactivado por defecto (1.0 = sin penalización)
-    # Control del decodificador de profundidad (audio fines)
-    # Nota: estos parámetros pueden no ser soportados por CSM-1B
-    "depth_decoder_do_sample": True,  # Más conservador
-    "depth_decoder_temperature": 0.8,  # Más conservador
+    "temperature": 0.8,     # creatividad moderada
+    "max_tokens": 4096,     # ≈ 1 min de audio (24 kHz)
+    "do_sample": True,      # sampling estocástico activado
+    "output_audio": True    # el modelo debe devolver audio WAV
 }
 
-# Texto > ≈ 2048 tokens se corta en oraciones para evitar drift
-MAX_TOKENS_PER_CHUNK = 2048
-
-def _split_sentences(text: str) -> List[str]:
-    """
-    Divide en oraciones preservando puntuación. Evita que el modelo genere
-    bloques demasiado largos, lo que reduce repeticiones y tartamudeo.
-    """
-    pattern = r'(?<=[\.\?\!])\s+'
-    sentences = re.split(pattern, text.strip())
-    return [s.strip() for s in sentences if s.strip()]
-
-# CUDA Compatibility Configuration for different GPU architectures
-# Supports RTX 4090, RTX 6000 Ada, RTX 5090, and other modern GPUs
+# CUDA Compatibility Configuration for RTX 4090 and RTX 6000 Ada
 def setup_cuda_compatibility():
-    """Setup CUDA environment for maximum GPU compatibility"""
+    """Setup CUDA environment optimized for RTX 4090 and RTX 6000 Ada"""
     
-    # Essential CUDA environment variables for broad compatibility
-    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '1')  # Enable for better error debugging
-    os.environ.setdefault('TORCH_USE_CUDA_DSA', '1')    # Enable device-side assertions
+    # Essential CUDA environment variables
+    os.environ.setdefault('CUDA_LAUNCH_BLOCKING', '0')
+    os.environ.setdefault('TORCH_USE_CUDA_DSA', '0')
     os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
     
     # Memory management for large models
     os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:512,expandable_segments:True')
     
-    # Optimize for different compute capabilities
-    # RTX 4090/6000 Ada: 8.9, RTX 5090: 12.0 (sm_120)
+    # Optimize for RTX series
     os.environ.setdefault('TORCH_CUDNN_V8_API_ENABLED', '1')
-    
-    # Compatibility flags
-    os.environ.setdefault('NO_TORCH_COMPILE', '1')  # Disabled by default - use ENABLE_TORCH_COMPILE=1 to enable
+    os.environ.setdefault('NO_TORCH_COMPILE', '1')
     os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
     os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
     
@@ -88,57 +65,21 @@ def setup_cuda_compatibility():
             print(f"🔧 Compute Capability: {compute_capability}")
             print(f"💾 Memory: {device_props.total_memory / 1024**3:.1f} GB")
             
-            # Check for RTX 5090 compatibility issue
-            if device_props.major >= 12:  # RTX 5090 has sm_120
-                pytorch_version = torch.__version__
-                major_version = int(pytorch_version.split('.')[0])
-                minor_version = int(pytorch_version.split('.')[1])
-                
-                print("🚨 RTX 5090 detected!")
-                print(f"🐍 PyTorch Version: {pytorch_version}")
-                
-                if major_version < 2 or (major_version == 2 and minor_version < 5):
-                    print("⚠️ PyTorch < 2.5 with RTX 5090 - kernel incompatibility likely")
-                    print("🔧 Testing CUDA compatibility...")
-                    
-                    # Test if basic CUDA operations work
-                    try:
-                        test_tensor = torch.tensor([1.0, 2.0], device='cuda')
-                        result = test_tensor + 1.0
-                        print("✅ Basic CUDA operations work - using conservative mode")
-                        
-                        # Set conservative mode
-                        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256,expandable_segments:False'
-                        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-                        return True
-                        
-                    except Exception as cuda_test_error:
-                        print(f"❌ CUDA test failed: {cuda_test_error}")
-                        print("🔄 Forcing CPU mode for RTX 5090 stability")
-                        os.environ['CUDA_VISIBLE_DEVICES'] = ''
-                        return False  # Force CPU mode
-                else:
-                    print("✅ PyTorch >= 2.5 - full RTX 5090 support available")
-                    return True
-                
-            # Specific optimizations for supported RTX series
-            elif device_props.major >= 9:  # RTX 4090 series with sm_90 support
+            # Optimize for RTX 4090 and 6000 Ada
+            if device_props.major >= 9:  # RTX 4090 series with sm_90 support
                 print("🚀 RTX 4090+ series detected - applying advanced optimizations")
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
-                
-            # Common optimizations for all RTX series
-            elif device_props.major >= 8:
-                print("⚡ RTX series GPU detected - enabling TensorFloat-32")
+            elif device_props.major >= 8:  # RTX 6000 Ada series
+                print("⚡ RTX 6000 Ada series detected - enabling optimizations")
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
                 
-            return True  # CUDA can be used
+            return True
             
         except Exception as e:
             print(f"⚠️ GPU detection failed: {e}")
             print("🔄 Falling back to CPU mode")
-            os.environ['CUDA_VISIBLE_DEVICES'] = ''
             return False
     else:
         print("💻 No CUDA available, using CPU mode")
@@ -148,7 +89,6 @@ def setup_cuda_compatibility():
 cuda_available = setup_cuda_compatibility()
 
 # Fix for torch.compiler compatibility issues
-# Some PyTorch versions don't have torch.compiler.is_compiling
 if not hasattr(torch.compiler, 'is_compiling'):
     torch.compiler.is_compiling = lambda: False
 
@@ -200,36 +140,7 @@ class CSMVoiceManager:
         
         # Use global cuda_available variable to determine device
         global cuda_available
-        
-        # Check if CUDA was forcibly disabled by RTX 5090 detection
-        cuda_disabled = os.environ.get('CUDA_VISIBLE_DEVICES') == ''
-        
-        if cuda_disabled:
-            self.device = "cpu"
-            logger.info("💻 Using CPU device (forced for RTX 5090 compatibility)")
-        else:
-            self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
-        
-        # Check if we're on RTX 5090 with compatibility issues
-        self.is_rtx5090_problematic = False
-        if torch.cuda.is_available():
-            try:
-                device_props = torch.cuda.get_device_properties(0)
-                if device_props.major >= 12:  # RTX 5090
-                    pytorch_version = torch.__version__
-                    major_version = int(pytorch_version.split('.')[0])
-                    minor_version = int(pytorch_version.split('.')[1])
-                    
-                    if major_version < 2 or (major_version == 2 and minor_version < 5):
-                        self.is_rtx5090_problematic = True
-                        logger.warning("🚨 RTX 5090 with PyTorch < 2.5 detected - enabling special handling")
-            except:
-                pass
-        
-        if not cuda_available and torch.cuda.is_available():
-            logger.info("⚠️ CUDA available but incompatible GPU detected - using CPU mode")
-        elif not torch.cuda.is_available():
-            logger.info("💻 CUDA not available - using CPU mode")
+        self.device = "cuda" if (torch.cuda.is_available() and cuda_available) else "cpu"
         
         # Modelos y procesadores
         self.model = None
@@ -244,6 +155,9 @@ class CSMVoiceManager:
         logger.info(f"📁 Normal model path: {model_path} (NOT LOADED)")
         logger.info(f"📁 Voices directory: {voices_dir}")
         logger.info(f"🖥️ Device: {self.device}")
+        
+        if torch.cuda.is_available() and self.device == "cuda":
+            logger.info("✅ CUDA optimizations enabled for RTX 4090/6000 Ada")
         
         # Crear directorios necesarios
         self.voices_dir.mkdir(exist_ok=True)
@@ -269,7 +183,7 @@ class CSMVoiceManager:
             if not Path(self.turbo_model_path).exists():
                 raise FileNotFoundError(f"Turbo model directory not found: {self.turbo_model_path}")
             
-            logger.info("🚀 Loading CSM processor...")
+            logger.info("🚀 Loading ONLY turbo CSM processor...")
             self.processor = AutoProcessor.from_pretrained(self.turbo_model_path)
             self.turbo_processor = self.processor  # Usar el mismo processor
             
@@ -289,38 +203,23 @@ class CSMVoiceManager:
                     compute_capability = f"{device_props.major}.{device_props.minor}"
                     
                     # Optimize loading based on GPU architecture
-                    if device_props.major >= 12:  # RTX 5090
-                        logger.info("🚨 RTX 5090 detected - using conservative loading")
-                        # Use CPU for RTX 5090 with PyTorch < 2.5 to avoid kernel issues
-                        if self.is_rtx5090_problematic:
-                            logger.info("🔄 Loading RTX 5090 model on CPU due to compatibility issues")
-                            model_kwargs.update({
-                                "device_map": "cpu",
-                                "torch_dtype": torch.float32,  # CPU compatible
-                            })
-                        else:
-                            model_kwargs.update({
-                                "device_map": self.device,
-                                "torch_dtype": torch.float32,  # Most conservative for compatibility
-                            })
-                    elif device_props.major >= 9:  # RTX 4090  (SM 90)
-                        logger.info("🚀 RTX 4090 detected - using FP16 + FlashAttention2")
+                    if device_props.major >= 9:  # RTX 4090 series with sm_90 support
+                        logger.info("🚀 RTX 4090+ series detected - using advanced loading")
                         model_kwargs.update({
                             "device_map": "auto",
                             "torch_dtype": torch.float16,
-                            "attn_implementation": "flash_attention_2",
                         })
                     elif device_props.major >= 8:  # RTX 6000 Ada
                         logger.info("⚡ RTX 6000 Ada detected - using optimized loading")
                         model_kwargs.update({
                             "device_map": self.device,
-                            "torch_dtype": torch.float16,  # Good balance for 8.x series
+                            "torch_dtype": torch.float16,
                         })
                     else:  # Older GPUs
                         logger.info("🔧 Legacy GPU detected - using compatible loading")
                         model_kwargs.update({
                             "device_map": self.device,
-                            "torch_dtype": torch.float32,  # Maximum compatibility
+                            "torch_dtype": torch.float32,
                         })
                     
                     # Remove None values
@@ -374,19 +273,8 @@ class CSMVoiceManager:
                 else:
                     raise cuda_error
             
-            # Opcionalmente compilar el modelo para kernels optimizados:
-            # PyTorch >= 2.1 hace graph capture + Triton; acelera ≈1.3-1.4 ×. 
-            # DESHABILITADO POR DEFECTO - puede causar problemas de compatibilidad
-            if hasattr(torch, "compile") and os.environ.get("ENABLE_TORCH_COMPILE", "0") == "1":
-                logger.info("🛠️  Compiling model with torch.compile() (max-autotune) ...")
-                try:
-                    self.model = torch.compile(self.model, mode="max-autotune")
-                    logger.info("✅ Model compiled successfully")
-                except Exception as compile_error:
-                    logger.warning(f"⚠️ Model compilation failed: {compile_error}")
-                    logger.info("🔄 Continuing without compilation")
-            
-            self.turbo_model = self.model  # Alias
+            # El modelo turbo ES el modelo principal
+            self.turbo_model = self.model
             
             logger.info("🚀 Applied memory optimizations (low_cpu_mem_usage)")
             logger.info("✅ Turbo CSM model loaded successfully as primary model")
@@ -628,21 +516,262 @@ class CSMVoiceManager:
         logger.info(f"✅ Added voice sample to {voice_id}: {safe_name}")
         return profile
     
+    def _split_sentences(self, text: str, max_chars: int = 220) -> List[str]:
+        """
+        Corta el texto en frases usando puntuación. Si una frase
+        supera `max_chars`, se subdivide por comas o espacios.
+        220 caracteres ≈ ~18 tokens de entrada → genera ~0-1s de audio.
+        """
+        import textwrap
+        
+        # 1) Separar en oraciones básicas por puntuación
+        sentences = re.split(r'(?<=[.!?¿¡])\s+', text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        # 2) Asegurarse de no exceder max_chars
+        result = []
+        for sentence in sentences:
+            if len(sentence) <= max_chars:
+                result.append(sentence)
+            else:
+                # Fragmentar por comas/espacios si es muy largo
+                chunks = textwrap.wrap(sentence, width=max_chars, break_long_words=False)
+                result.extend(chunks)
+        
+        logger.info(f"📝 Split text into {len(result)} sentences (max {max_chars} chars each)")
+        return result
+    
+    def _build_conversation(self, reference_profile: VoiceProfile, sentences: List[str]) -> List[Dict]:
+        """
+        Construye la conversación CSM correcta con referencia de voz + oraciones.
+        - reference_profile: perfil con audio + transcripción de referencia
+        - sentences: lista de oraciones ya segmentadas
+        """
+        try:
+            # Cargar y procesar audio de referencia
+            waveform, sample_rate = torchaudio.load(reference_profile.audio_path)
+            
+            # Normalizar a 24kHz mono
+            if sample_rate != 24000:
+                resampler = torchaudio.transforms.Resample(sample_rate, 24000)
+                waveform = resampler(waveform)
+            
+            if waveform.shape[0] > 1:  # estéreo → mono
+                waveform = waveform.mean(dim=0, keepdim=True)
+            
+            # Convertir a numpy float32
+            ref_audio = waveform.squeeze().cpu().numpy().astype(np.float32)
+            
+            # Construir conversación: primer elemento con referencia de voz
+            conversation = [{
+                "role": "0",
+                "content": [
+                    {"type": "text", "text": reference_profile.transcription},
+                    {"type": "audio", "path": ref_audio}
+                ]
+            }]
+            
+            # Agregar cada oración como turno separado del mismo hablante
+            conversation.extend([
+                {
+                    "role": "0",
+                    "content": [{"type": "text", "text": sentence}]
+                }
+                for sentence in sentences
+            ])
+            
+            logger.info(f"🎯 Built conversation: 1 reference + {len(sentences)} sentences")
+            return conversation
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to build conversation: {e}")
+            raise
+    
+
+    def clone_voice_with_sentences(
+        self, 
+        text: str, 
+        voice_id: str = None,
+        sample_name: str = None,
+        enable_sentence_splitting: bool = True,
+        max_chars: int = 220,
+        temperature: float = GENERATION_DEFAULTS["temperature"],
+        max_tokens: int = GENERATION_DEFAULTS["max_tokens"],
+        turbo: bool = True
+    ) -> np.ndarray:
+        """
+        Clona voz con división inteligente en oraciones usando el patrón CSM correcto.
+        UNA sola llamada al modelo con conversación completa.
+        """
+        try:
+            # Validar que se requiere voice_id para el contexto
+            if not voice_id or voice_id not in self.voice_collections:
+                logger.warning("⚠️ No voice_id provided, falling back to normal generation")
+                return self.clone_voice(
+                    text=text, 
+                    voice_id=voice_id, 
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    turbo=turbo
+                )
+            
+            collection = self.voice_collections[voice_id]
+            if not collection.profiles:
+                raise ValueError(f"Voice collection '{voice_id}' has no profiles")
+            
+            # Seleccionar perfil de referencia
+            reference_profile = None
+            if sample_name:
+                reference_profile = next((p for p in collection.profiles if p.name == sample_name), None)
+            
+            if not reference_profile:
+                reference_profile = collection.profiles[0]  # Usar el primero disponible
+            
+            # Si el texto es corto o la división está deshabilitada, usar método normal
+            if not enable_sentence_splitting or len(text) <= max_chars:
+                logger.info("🎯 Using single-pass generation (text too short or splitting disabled)")
+                return self.clone_voice(
+                    text=text, 
+                    voice_id=voice_id, 
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    turbo=turbo
+                )
+            
+            # 1) Dividir texto en oraciones
+            sentences = self._split_sentences(text, max_chars)
+            
+            if len(sentences) == 1:
+                logger.info("🎯 Single sentence after splitting, using normal generation")
+                return self.clone_voice(
+                    text=sentences[0], 
+                    voice_id=voice_id, 
+                    sample_name=sample_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    turbo=turbo
+                )
+            
+            # 2) Construir conversación completa
+            logger.info(f"🎵 Building conversation with {len(sentences)} sentences")
+            conversation = self._build_conversation(reference_profile, sentences)
+            
+            # 3) Procesar conversación con el modelo
+            inputs = self.processor.apply_chat_template(
+                conversation,
+                tokenize=True,
+                return_dict=True,
+            ).to(self.device)
+            
+            # Asegurar que los tipos de tensor coincidan con el modelo
+            model_dtype = next(self.model.parameters()).dtype
+            for key, value in inputs.items():
+                if hasattr(value, 'dtype') and value.dtype.is_floating_point:
+                    if value.dtype != model_dtype:
+                        inputs[key] = value.to(dtype=model_dtype)
+            
+            # 4) Inferencia con parámetros sensatos
+            logger.info(f"🚀 Generating audio with sentence conversation ({len(sentences)} sentences)")
+            
+            try:
+                with torch.no_grad():
+                    # Limpiar caché CUDA antes de la generación
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    outputs = self.model.generate(
+                        **inputs,
+                        output_audio=GENERATION_DEFAULTS["output_audio"],
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=GENERATION_DEFAULTS["do_sample"]
+                    )
+                
+            except RuntimeError as cuda_error:
+                if "CUDA" in str(cuda_error):
+                    logger.warning(f"⚠️ CUDA error during sentence generation: {cuda_error}")
+                    logger.info("🔄 Attempting CUDA recovery...")
+                    
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    
+                    # Retry con configuración más conservadora
+                    with torch.no_grad():
+                        outputs = self.model.generate(
+                            **inputs,
+                            output_audio=GENERATION_DEFAULTS["output_audio"],
+                            max_new_tokens=min(max_tokens, 2048),
+                            temperature=temperature,
+                            do_sample=GENERATION_DEFAULTS["do_sample"],
+                            use_cache=False
+                        )
+                    logger.info("✅ Generation successful after CUDA recovery")
+                else:
+                    raise cuda_error
+            
+            # 5) Extraer y procesar audio
+            if hasattr(outputs, 'audio_values'):
+                audio = outputs.audio_values
+            elif isinstance(outputs, dict) and 'audio_values' in outputs:
+                audio = outputs['audio_values']
+            elif isinstance(outputs, (list, tuple)) and len(outputs) > 1:
+                audio = outputs[1] if len(outputs) > 1 else outputs[0]
+            else:
+                audio = outputs
+            
+            # Convertir a numpy
+            if isinstance(audio, torch.Tensor):
+                audio = audio.float().cpu().numpy()
+            elif isinstance(audio, list) and len(audio) > 0:
+                audio = audio[0]
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.float().cpu().numpy()
+                else:
+                    audio = np.array(audio, dtype=np.float32)
+            else:
+                audio = np.array(audio, dtype=np.float32)
+            
+            # Procesar audio final
+            if len(audio.shape) > 1:
+                audio = audio.flatten()
+            
+            # Normalizar
+            if np.max(np.abs(audio)) > 0:
+                audio = audio / np.max(np.abs(audio)) * 0.95
+            
+            total_duration = len(audio) / 24000
+            
+            logger.info(f"✅ Sentence-based generation complete:")
+            logger.info(f"   📊 Sentences: {len(sentences)}, Duration: {total_duration:.2f}s")
+            logger.info(f"   🎯 Audio shape: {audio.shape}")
+            logger.info(f"   💡 Used single model call with full conversation context")
+            
+            return audio
+            
+        except Exception as e:
+            logger.error(f"❌ Sentence-split voice cloning failed: {e}")
+            logger.info("🔄 Falling back to single-pass generation")
+            # Fallback a generación normal
+            return self.clone_voice(
+                text=text, 
+                voice_id=voice_id, 
+                sample_name=sample_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                turbo=turbo
+            )
+    
     def clone_voice(
         self, 
         text: str, 
         voice_id: str = None,
         sample_name: str = None,
-        # nuevos controladores con valores por defecto del dict global
         temperature: float = GENERATION_DEFAULTS["temperature"],
-        top_p: float = GENERATION_DEFAULTS["top_p"],
-        top_k: int = GENERATION_DEFAULTS["top_k"],
-        repetition_penalty: float = GENERATION_DEFAULTS["repetition_penalty"],
-        depth_decoder_do_sample: bool = GENERATION_DEFAULTS["depth_decoder_do_sample"],
-        depth_decoder_temperature: float = GENERATION_DEFAULTS["depth_decoder_temperature"],
-        max_tokens: int = 4096,
-        turbo: bool = False,
-        use_advanced_params: bool = True  # Flag para habilitar/deshabilitar parámetros avanzados
+        max_tokens: int = GENERATION_DEFAULTS["max_tokens"],
+        turbo: bool = False
     ) -> np.ndarray:
         """Clona una voz usando una muestra específica con opción turbo"""
         try:
@@ -704,292 +833,110 @@ class CSMVoiceManager:
                     except Exception as e:
                         logger.error(f"❌ Failed to load reference audio: {e}")
             
-            # -------------------------------------------------
-            # 1) Preparar kwargs de generación con control total
-            # -------------------------------------------------
-            # Parámetros básicos siempre soportados
-            generation_kwargs = dict(
-                output_audio=True,
-                max_new_tokens=max_tokens,
-                do_sample=True,
-                temperature=temperature,
-            )
+            # Agregar texto a sintetizar
+            conversation.append({
+                "role": "0",
+                "content": [{"type": "text", "text": text}]
+            })
             
-            # Añadir parámetros avanzados solo si están habilitados
-            # Algunos modelos CSM-1B pueden no soportar todos los parámetros
-            if use_advanced_params:
-                try:
-                    # Verificar si el modelo soporta estos parámetros
-                    model_config = model.config if hasattr(model, 'config') else None
-                    
-                    # Añadir parámetros avanzados con cuidado
-                    advanced_params = {}
-                    
-                    # Top-p y top-k son generalmente soportados
-                    advanced_params['top_p'] = top_p
-                    advanced_params['top_k'] = top_k
-                    
-                    # Estos parámetros pueden no ser soportados por CSM-1B
-                    # Los añadimos solo si no causan errores
-                    if hasattr(model, 'generation_config'):
-                        gen_config = model.generation_config
-                        # Solo añadir si el modelo los reconoce
-                        if hasattr(gen_config, 'repetition_penalty'):
-                            advanced_params['repetition_penalty'] = repetition_penalty
-                        if hasattr(gen_config, 'depth_decoder_do_sample'):
-                            advanced_params['depth_decoder_do_sample'] = depth_decoder_do_sample
-                            advanced_params['depth_decoder_temperature'] = depth_decoder_temperature
-                    
-                    generation_kwargs.update(advanced_params)
-                    logger.info(f"🎛️ Using advanced parameters: {list(advanced_params.keys())}")
-                    
-                except Exception as param_error:
-                    logger.warning(f"⚠️ Could not apply all advanced parameters: {param_error}")
-                    logger.info("🔄 Using basic generation parameters only")
-            
-            # -------------------------------------------------
-            # 2) Segmentar texto muy largo para evitar drift
-            # -------------------------------------------------
-            chunks: List[str] = []
-            # Solo segmentar si usamos parámetros avanzados y el texto es largo
-            if use_advanced_params and max_tokens > MAX_TOKENS_PER_CHUNK:
-                chunks = _split_sentences(text)
-                if len(chunks) > 1:
-                    logger.info(f"✂️  Texto largo: dividido en {len(chunks)} oraciones")
-                else:
-                    chunks = [text]  # Si no hay separación clara, usar texto completo
+            # Procesar entrada
+            if conversation:
+                inputs = processor.apply_chat_template(
+                    conversation,
+                    tokenize=True,
+                    return_dict=True,
+                ).to(self.device)
             else:
-                chunks = [text]
+                # Sin contexto, usar formato simple
+                formatted_text = f"[0]{text}"
+                inputs = processor(formatted_text, add_special_tokens=True).to(self.device)
             
-            generated_audio = []
+            # Ensure tensor types match the model dtype
+            model_dtype = next(model.parameters()).dtype
+            for key, value in inputs.items():
+                if hasattr(value, 'dtype') and value.dtype.is_floating_point:
+                    if value.dtype != model_dtype:
+                        inputs[key] = value.to(dtype=model_dtype)
+                        logger.debug(f"🔄 Converted {key} from {value.dtype} to {model_dtype}")
             
-            # -------------------------------------------------
-            # 3) Bucle de generación por chunk
-            # -------------------------------------------------
-            for i, chunk_text in enumerate(chunks, start=1):
-                if len(chunks) > 1:
-                    logger.info(f"🌀 Generating chunk {i}/{len(chunks)}: {chunk_text[:60]}...")
+            # Generación con manejo robusto de errores CUDA
+            try:
+                # Standard CUDA generation
+                with torch.no_grad():
+                    # Clear CUDA cache before generation for stability
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    outputs = model.generate(
+                        **inputs, 
+                        output_audio=GENERATION_DEFAULTS["output_audio"],
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=GENERATION_DEFAULTS["do_sample"]
+                    )
                 
-                conversation_chunk = conversation.copy()
-                conversation_chunk.append({"role": "0", "content": [{"type": "text", "text": chunk_text}]})
-                
-                # Procesar entrada
-                if conversation_chunk:
-                    inputs = processor.apply_chat_template(
-                        conversation_chunk,
-                        tokenize=True,
-                        return_dict=True,
-                    ).to(self.device)
-                else:
-                    # Sin contexto, usar formato simple
-                    formatted_text = f"[0]{chunk_text}"
-                    inputs = processor(formatted_text, add_special_tokens=True).to(self.device)
-                
-                # Ensure tensor types match the model dtype
-                model_dtype = next(model.parameters()).dtype
-                for key, value in inputs.items():
-                    if hasattr(value, 'dtype') and value.dtype.is_floating_point:
-                        if value.dtype != model_dtype:
-                            inputs[key] = value.to(dtype=model_dtype)
-                            logger.debug(f"🔄 Converted {key} from {value.dtype} to {model_dtype}")
-                
-                # -----------------------
-                # GENERACIÓN DEL CHUNK
-                # -----------------------
-                try:
-                    # Special handling for RTX 5090 with kernel compatibility issues
-                    if self.is_rtx5090_problematic:
-                        logger.info("🚨 Using RTX 5090 compatible generation mode (CPU)")
-                        
-                        # Ensure all inputs are on CPU with correct dtypes
-                        cpu_inputs = {}
-                        for key, value in inputs.items():
-                            if hasattr(value, 'cpu'):
-                                cpu_value = value.cpu()
-                                # Handle different tensor types correctly
-                                if key in ['input_ids', 'token_type_ids'] and cpu_value.dtype.is_floating_point:
-                                    # Token IDs must be integers for embedding layers
-                                    cpu_inputs[key] = cpu_value.long()
-                                    logger.debug(f"🔄 Converted {key} to long for embedding compatibility")
-                                elif key == 'attention_mask' and cpu_value.dtype.is_floating_point:
-                                    # Attention mask should be integers (0 or 1)
-                                    cpu_inputs[key] = cpu_value.long()
-                                    logger.debug(f"🔄 Converted {key} to long for attention mask")
-                                else:
-                                    cpu_inputs[key] = cpu_value
-                            else:
-                                cpu_inputs[key] = value
-                        
-                        # Model should already be on CPU for RTX 5090 problematic cases
+            except RuntimeError as cuda_error:
+                if "CUDA" in str(cuda_error):
+                    logger.warning(f"⚠️ CUDA error during generation: {cuda_error}")
+                    
+                    # Standard CUDA error recovery
+                    logger.info("🔄 Attempting CUDA recovery...")
+                    
+                    # Clear cache and retry with lower memory usage
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    
+                    # Retry with more conservative settings
+                    try:
                         with torch.no_grad():
                             outputs = model.generate(
-                                **cpu_inputs,
-                                **generation_kwargs,
-                                max_new_tokens=min(max_tokens, 1536),  # Conservative for CPU
-                                use_cache=False
+                                **inputs, 
+                                output_audio=GENERATION_DEFAULTS["output_audio"],
+                                max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
+                                temperature=temperature,
+                                do_sample=GENERATION_DEFAULTS["do_sample"],
+                                use_cache=False  # Reduce memory usage
                             )
-                        
-                        logger.info("✅ RTX 5090 CPU generation completed successfully")
-                    
-                    else:
-                        # Standard CUDA generation
-                        with torch.no_grad():
-                            # Clear CUDA cache before generation for stability
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                            
-                            outputs = model.generate(
-                                **inputs,
-                                **generation_kwargs
-                            )
-                        
-                except RuntimeError as cuda_error:
-                    error_str = str(cuda_error)
-                    if "CUDA" in error_str:
-                        logger.warning(f"⚠️ CUDA error during generation: {cuda_error}")
-                        
-                        # Check for index out of bounds error specifically
-                        if "index out of bounds" in error_str or "idx_dim >= 0 && idx_dim < index_size" in error_str:
-                            logger.warning("🚨 Index out of bounds error detected!")
-                            logger.info("🔄 This is often caused by incompatible generation parameters")
-                            
-                            # If using advanced params, retry without them
-                            if use_advanced_params and len(generation_kwargs) > 4:
-                                logger.info("🔄 Retrying with basic parameters only...")
-                                # Reset to basic parameters
-                                generation_kwargs = dict(
-                                    output_audio=True,
-                                    max_new_tokens=min(max_tokens, 2048),
-                                    do_sample=True,
-                                    temperature=temperature,
-                                )
-                                
-                                # Retry generation
-                                with torch.no_grad():
-                                    if torch.cuda.is_available():
-                                        torch.cuda.empty_cache()
-                                    
-                                    outputs = model.generate(
-                                        **inputs,
-                                        **generation_kwargs
-                                    )
-                                logger.info("✅ Generation successful with basic parameters")
-                            else:
-                                raise RuntimeError(f"Index out of bounds error. Try reducing temperature or max_tokens. Original error: {cuda_error}")
-                        
-                        # Check for RTX 5090 specific "no kernel image" error
-                        elif "no kernel image is available for execution on the device" in error_str:
-                            logger.warning("🚨 RTX 5090 kernel incompatibility detected!")
-                            logger.info("🔄 Forcing CPU mode for this generation...")
-                            
-                            # Move model and inputs to CPU for this generation
-                            try:
-                                # Move inputs to CPU with proper dtype handling
-                                cpu_inputs = {}
-                                for key, value in inputs.items():
-                                    if hasattr(value, 'cpu'):
-                                        cpu_value = value.cpu()
-                                        # Handle different tensor types correctly
-                                        if key in ['input_ids', 'token_type_ids'] and cpu_value.dtype.is_floating_point:
-                                            # Token IDs must be integers for embedding layers
-                                            cpu_inputs[key] = cpu_value.long()
-                                            logger.debug(f"🔄 Converted {key} to long for embedding compatibility")
-                                        elif key == 'attention_mask' and cpu_value.dtype.is_floating_point:
-                                            # Attention mask should be integers (0 or 1)
-                                            cpu_inputs[key] = cpu_value.long()
-                                            logger.debug(f"🔄 Converted {key} to long for attention mask")
-                                        else:
-                                            cpu_inputs[key] = cpu_value
-                                    else:
-                                        cpu_inputs[key] = value
-                                
-                                # Temporarily move model to CPU
-                                original_device = model.device
-                                model.cpu()
-                                
-                                with torch.no_grad():
-                                    outputs = model.generate(
-                                        **cpu_inputs,
-                                        **generation_kwargs,
-                                        max_new_tokens=min(max_tokens, 2048),  # Conservative for CPU
-                                        use_cache=False
-                                    )
-                                
-                                # Move model back to original device (in case needed for future)
-                                model.to(original_device)
-                                
-                                logger.info("✅ Generation successful using CPU fallback for RTX 5090")
-                                
-                            except Exception as cpu_error:
-                                logger.error(f"❌ CPU fallback also failed: {cpu_error}")
-                                raise RuntimeError(f"RTX 5090 CUDA generation failed: {cuda_error}. CPU fallback also failed: {cpu_error}")
-                        
-                        else:
-                            # Standard CUDA error recovery
-                            logger.info("🔄 Attempting CUDA recovery...")
-                            
-                            # Clear cache and retry with lower memory usage
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                                torch.cuda.synchronize()
-                            
-                            # Retry with more conservative settings
-                            try:
-                                with torch.no_grad():
-                                    outputs = model.generate(
-                                        **inputs,
-                                        **generation_kwargs,
-                                        max_new_tokens=min(max_tokens, 2048),  # Reduce tokens
-                                        use_cache=False  # Reduce memory usage
-                                    )
-                                logger.info("✅ Generation successful after CUDA recovery")
-                            except Exception as retry_error:
-                                logger.error(f"❌ CUDA recovery failed: {retry_error}")
-                                raise RuntimeError(f"CUDA generation failed: {cuda_error}. Recovery attempt also failed: {retry_error}")
-                    else:
-                        raise cuda_error
-                
-                # Extraer y procesar audio
-                if hasattr(outputs, 'audio_values'):
-                    audio = outputs.audio_values
-                elif isinstance(outputs, dict) and 'audio_values' in outputs:
-                    audio = outputs['audio_values']
-                elif isinstance(outputs, (list, tuple)) and len(outputs) > 1:
-                    audio = outputs[1] if len(outputs) > 1 else outputs[0]
+                        logger.info("✅ Generation successful after CUDA recovery")
+                    except Exception as retry_error:
+                        logger.error(f"❌ CUDA recovery failed: {retry_error}")
+                        raise RuntimeError(f"CUDA generation failed: {cuda_error}. Recovery attempt also failed: {retry_error}")
                 else:
-                    audio = outputs
-                
-                # Convertir a numpy
-                if isinstance(audio, torch.Tensor):
-                    audio = audio.float().cpu().numpy()
-                elif isinstance(audio, list):
-                    if len(audio) > 0:
-                        audio = audio[0]
-                        if isinstance(audio, torch.Tensor):
-                            audio = audio.float().cpu().numpy()
-                        else:
-                            audio = np.array(audio, dtype=np.float32)
-                    else:
-                        logger.warning("⚠️ Model returned empty audio, generating silence")
-                        audio = np.zeros(24000, dtype=np.float32)
-                else:
-                    audio = np.array(audio, dtype=np.float32)
-                
-                # Procesar audio final
-                if len(audio.shape) > 1:
-                    audio = audio.flatten()
-                
-                if np.max(np.abs(audio)) > 1.0:
-                    audio = audio / np.max(np.abs(audio))
-                
-                generated_audio.append(audio)
+                    raise cuda_error
             
-            # Concatenar si hay varios trozos
-            if len(generated_audio) > 1:
-                logger.info("🔗 Concatenando chunks de audio...")
-                audio = np.concatenate(generated_audio)
+            # Extraer y procesar audio
+            if hasattr(outputs, 'audio_values'):
+                audio = outputs.audio_values
+            elif isinstance(outputs, dict) and 'audio_values' in outputs:
+                audio = outputs['audio_values']
+            elif isinstance(outputs, (list, tuple)) and len(outputs) > 1:
+                audio = outputs[1] if len(outputs) > 1 else outputs[0]
             else:
-                audio = generated_audio[0]
+                audio = outputs
+            
+            # Convertir a numpy
+            if isinstance(audio, torch.Tensor):
+                audio = audio.float().cpu().numpy()
+            elif isinstance(audio, list):
+                if len(audio) > 0:
+                    audio = audio[0]
+                    if isinstance(audio, torch.Tensor):
+                        audio = audio.float().cpu().numpy()
+                    else:
+                        audio = np.array(audio, dtype=np.float32)
+                else:
+                    logger.warning("⚠️ Model returned empty audio, generating silence")
+                    audio = np.zeros(24000, dtype=np.float32)
+            else:
+                audio = np.array(audio, dtype=np.float32)
+            
+            # Procesar audio final
+            if len(audio.shape) > 1:
+                audio = audio.flatten()
+            
+            if np.max(np.abs(audio)) > 1.0:
+                audio = audio / np.max(np.abs(audio))
             
             logger.info(f"✅ Generated audio shape: {audio.shape}, dtype: {audio.dtype}")
             return audio
@@ -1011,8 +958,8 @@ def get_voice_manager():
 # Configurar FastAPI
 app = FastAPI(
     title="🎤 Voice Cloning API Complete - CSM-1B Turbo",
-    description="API completa de clonación de voz con gestión avanzada de perfiles y modo turbo para inferencia ultrarrápida",
-    version="3.2.1"
+    description="API completa de clonación de voz con gestión avanzada de perfiles, modo turbo y división inteligente en oraciones para prosodia mejorada",
+    version="3.2.0"
 )
 
 app.add_middleware(
@@ -1048,7 +995,6 @@ async def home():
                 .header { background: rgba(255,255,255,0.95); padding: 30px; border-radius: 15px; margin-bottom: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
                 h1 { color: #333; text-align: center; margin: 0; font-size: 2.5em; }
                 .subtitle { text-align: center; color: #666; margin-top: 10px; font-size: 1.2em; }
-                .version { text-align: center; color: #888; font-size: 0.9em; margin-top: 5px; }
                 .section { background: rgba(255,255,255,0.95); margin: 20px 0; padding: 25px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
                 .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 8px; font-family: 'Consolas', monospace; border-left: 4px solid #007bff; }
                 .method { background: #007bff; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; margin-right: 10px; }
@@ -1060,20 +1006,18 @@ async def home():
                 .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
                 .feature { background: rgba(255,255,255,0.9); padding: 20px; border-radius: 10px; text-align: center; border: 2px solid #eee; }
                 .feature h3 { color: #333; margin-top: 0; }
-                .new-badge { background: #ff4757; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-left: 5px; vertical-align: super; }
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="header">
                     <h1>🎤 Voice Cloning API Complete</h1>
-                    <div class="subtitle">Powered by CSM-1B Turbo • Gestión Avanzada de Voces • Inferencia Ultrarrápida</div>
-                    <div class="version">v3.2.1 - Controladores Avanzados de Generación (Modo Compatibilidad)</div>
+                    <div class="subtitle">Powered by CSM-1B Turbo • Optimizado RTX 4090/6000 Ada • Inferencia Ultrarrápida</div>
                 </div>
                 
                 <div class="section">
                     <div class="status">
-                        ✅ API funcionando perfectamente • Sistema de carpetas organizadas • Controladores optimizados
+                        ✅ API funcionando perfectamente • Sistema de carpetas organizadas
                     </div>
                 </div>
                 
@@ -1094,11 +1038,7 @@ async def home():
                         </div>
                         <div class="feature">
                             <h3>🚀 Modo Turbo</h3>
-                            <p>FP16 + FlashAttention2 + torch.compile() para RTX 4090</p>
-                        </div>
-                        <div class="feature">
-                            <h3>🎛️ Control Total <span class="new-badge">NEW</span></h3>
-                            <p>top_p, top_k, repetition_penalty, depth_decoder control</p>
+                            <p>Modelo cuantizado int8 para inferencia ultrarrápida</p>
                         </div>
                         <div class="feature">
                             <h3>📊 Análisis Completo</h3>
@@ -1106,11 +1046,11 @@ async def home():
                         </div>
                         <div class="feature">
                             <h3>⏱️ Generación Extendida</h3>
-                            <p>Hasta 3 minutos con segmentación automática</p>
+                            <p>Hasta 3 minutos de audio continuo de alta calidad</p>
                         </div>
                         <div class="feature">
-                            <h3>🔧 Optimizado <span class="new-badge">NEW</span></h3>
-                            <p>Sin tartamudeos, prosodia estable, español neutro</p>
+                            <h3>🎭 División Inteligente</h3>
+                            <p>Mejora la prosodia dividiendo texto en oraciones con mínima latencia</p>
                         </div>
                     </div>
                 </div>
@@ -1121,8 +1061,9 @@ async def home():
                     <div class="endpoint"><span class="method get">GET</span>/voices - Listar todas las colecciones de voces</div>
                     <div class="endpoint"><span class="method get">GET</span>/voices/{voice_id} - Detalles de una voz específica</div>
                     <div class="endpoint"><span class="method post">POST</span>/voices/{voice_id}/upload - Subir muestra de audio</div>
-                    <div class="endpoint"><span class="method post">POST</span>/clone - Clonar voz con texto (ahora con controladores)</div>
+                    <div class="endpoint"><span class="method post">POST</span>/clone - Clonar voz con texto (con división en oraciones opcional)</div>
                     <div class="endpoint"><span class="method post">POST</span>/clone_extended - Generación extendida (hasta 3 min)</div>
+                    <div class="endpoint"><span class="method post">POST</span>/clone_with_prosody - Clonación con prosodia mejorada (división inteligente)</div>
                     <div class="endpoint"><span class="method get">GET</span>/docs - Documentación interactiva</div>
                 </div>
                 
@@ -1142,21 +1083,16 @@ async def home():
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'transcription=Hola mundo'
                     </div>
                     <div class="endpoint">
-                        # Clonar voz (con valores por defecto optimizados)<br>
+                        # Clonar voz (modo normal)<br>
                         curl -X POST 'http://localhost:7860/clone' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto a sintetizar' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
                     </div>
                     <div class="endpoint">
-                        # Clonar voz (con control total - EXPERIMENTAL)<br>
+                        # Clonar voz (modo turbo - más rápido)<br>
                         curl -X POST 'http://localhost:7860/clone' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto a sintetizar' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'temperature=0.7' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'use_advanced_params=true' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'top_p=0.9' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'top_k=50' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'repetition_penalty=1.3' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'turbo=true'
                     </div>
                     <div class="endpoint">
@@ -1164,20 +1100,23 @@ async def home():
                         curl -X POST 'http://localhost:7860/clone_extended' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto muy largo para generar audio extendido...' \\<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;-F 'target_duration=120' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'repetition_penalty=1.5'
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem'
                     </div>
-                </div>
-                
-                <div class="section">
-                    <h2>🎛️ Parámetros de Control <span style="background: #ffc107; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 0.8em;">EXPERIMENTAL</span></h2>
-                    <p><strong>⚠️ IMPORTANTE:</strong> Los parámetros avanzados están deshabilitados por defecto debido a problemas de compatibilidad con algunos modelos CSM-1B. Para usarlos, debes agregar <code>use_advanced_params=true</code>.</p>
-                    <p><strong>temperature</strong> (0.5-1.0): Creatividad vs Precisión. Default: 0.8</p>
-                    <p><strong>top_p</strong> (0.8-0.95): Diversidad del vocabulario. Default: 0.9</p>
-                    <p><strong>top_k</strong> (20-100): Limita opciones de tokens. Default: 50</p>
-                    <p><strong>repetition_penalty</strong> (1.0-2.0): Evita repeticiones. Default: 1.0 (desactivado)</p>
-                    <p><strong>depth_decoder_do_sample</strong>: Determinismo en audio. Default: True</p>
-                    <p><strong>depth_decoder_temperature</strong>: Variación del audio. Default: 0.8</p>
+                    <div class="endpoint">
+                        # Clonación con prosodia mejorada (división inteligente CSM)<br>
+                        curl -X POST 'http://localhost:7860/clone_with_prosody' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Este es un texto largo. Tiene varias oraciones! ¿Mejorará la prosodia?' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'max_chars=220'
+                    </div>
+                    <div class="endpoint">
+                        # Clonación normal con sentence splitting habilitado<br>
+                        curl -X POST 'http://localhost:7860/clone' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'text=Texto con múltiples oraciones. Cada una mejora la prosodia.' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'voice_id=fran-fem' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'enable_sentence_splitting=true' \\<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;-F 'max_chars=220'
+                    </div>
                 </div>
             </div>
         </body>
@@ -1201,24 +1140,19 @@ async def health_check():
             gpu_info = {
                 "name": gpu_props.name,
                 "memory_gb": gpu_props.total_memory / 1024**3,
-                "memory_used_gb": torch.cuda.memory_allocated() / 1024**3,
-                "compute_capability": f"{gpu_props.major}.{gpu_props.minor}"
+                "memory_used_gb": torch.cuda.memory_allocated() / 1024**3
             }
         
         return {
             "status": "healthy",
-            "version": "3.2.1",
             "turbo_model": {
                 "loaded": manager.model is not None,
                 "processor_loaded": manager.processor is not None,
                 "path": manager.turbo_model_path,
                 "available": True,
                 "is_primary": True,
-                "optimizations": "FP16 + FlashAttention2" if gpu_available else "CPU mode",
-                "torch_compile": os.environ.get("ENABLE_TORCH_COMPILE", "0") == "1"
+                "optimizations": "memory_optimized_float32"
             },
-            "generation_defaults": GENERATION_DEFAULTS,
-            "cuda_debug_mode": os.environ.get("CUDA_LAUNCH_BLOCKING", "0") == "1",
             "normal_model": {
                 "loaded": False,
                 "available": False,
@@ -1337,18 +1271,14 @@ async def clone_voice_endpoint(
     text: str = Form(..., description="Text to synthesize"),
     voice_id: Optional[str] = Form(None, description="Voice collection ID"),
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
-    temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature (0.5-1.0)"),
-    top_p: float = Form(GENERATION_DEFAULTS["top_p"], description="Top-p sampling (0.8-0.95)"),
-    top_k: int = Form(GENERATION_DEFAULTS["top_k"], description="Top-k sampling (20-100)"),
-    repetition_penalty: float = Form(GENERATION_DEFAULTS["repetition_penalty"], description="Repetition penalty (1.0-2.0)"),
-    depth_decoder_do_sample: bool = Form(GENERATION_DEFAULTS["depth_decoder_do_sample"], description="Depth decoder sampling"),
-    depth_decoder_temperature: float = Form(GENERATION_DEFAULTS["depth_decoder_temperature"], description="Depth decoder temperature"),
-    max_tokens: int = Form(4096, description="Maximum tokens to generate (higher = longer audio, max ~25000 for 3min)"),
+    temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature"),
+    max_tokens: int = Form(GENERATION_DEFAULTS["max_tokens"], description="Maximum tokens to generate (higher = longer audio, max ~25000 for 3min)"),
     turbo: bool = Form(False, description="Use turbo mode (optimized model for faster inference)"),
-    use_advanced_params: bool = Form(False, description="Use advanced generation parameters (may cause errors with some models)"),
+    enable_sentence_splitting: bool = Form(True, description="Enable smart sentence splitting for better prosody"),
+    max_chars: int = Form(220, description="Maximum characters per sentence when using sentence splitting"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
-    """Clona una voz con el texto especificado - ahora con controladores avanzados opcionales"""
+    """Clona una voz con el texto especificado - ahora con modo turbo"""
     try:
         manager = get_voice_manager()
         
@@ -1363,38 +1293,35 @@ async def clone_voice_endpoint(
         if max_tokens < 64:
             raise HTTPException(status_code=400, detail="max_tokens must be at least 64 for meaningful audio generation")
         
-        # Si hay problemas con parámetros avanzados, intentar sin ellos
-        try:
-            # Generar audio
+        # Validar max_chars
+        if max_chars < 50:
+            raise HTTPException(status_code=400, detail="max_chars must be at least 50 characters")
+        if max_chars > 500:
+            raise HTTPException(status_code=400, detail="max_chars cannot exceed 500 characters")
+        
+        # Generar audio con o sin división en oraciones
+        if enable_sentence_splitting and len(text) > max_chars:
+            logger.info(f"🎵 Using sentence splitting (max {max_chars} chars per sentence)")
+            audio = manager.clone_voice_with_sentences(
+                text=text,
+                voice_id=voice_id,
+                sample_name=sample_name,
+                enable_sentence_splitting=enable_sentence_splitting,
+                max_chars=max_chars,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                turbo=turbo
+            )
+        else:
+            logger.info("🎯 Using single-pass generation")
             audio = manager.clone_voice(
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                depth_decoder_do_sample=depth_decoder_do_sample,
-                depth_decoder_temperature=depth_decoder_temperature,
                 max_tokens=max_tokens,
-                turbo=turbo,
-                use_advanced_params=use_advanced_params
+                turbo=turbo
             )
-        except RuntimeError as e:
-            if "CUDA" in str(e) and "assert" in str(e) and use_advanced_params:
-                logger.warning(f"⚠️ Advanced parameters caused CUDA error, retrying with basic parameters only")
-                # Reintentar sin parámetros avanzados
-                audio = manager.clone_voice(
-                    text=text,
-                    voice_id=voice_id,
-                    sample_name=sample_name,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    turbo=turbo,
-                    use_advanced_params=False
-                )
-            else:
-                raise
         
         # Crear nombre de archivo único
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
@@ -1440,13 +1367,9 @@ async def clone_voice_extended(
     sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
     target_duration: int = Form(60, description="Target duration in seconds (60-180)"),
     temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature"),
-    top_p: float = Form(GENERATION_DEFAULTS["top_p"], description="Top-p sampling"),
-    top_k: int = Form(GENERATION_DEFAULTS["top_k"], description="Top-k sampling"),
-    repetition_penalty: float = Form(GENERATION_DEFAULTS["repetition_penalty"], description="Repetition penalty"),
-    depth_decoder_do_sample: bool = Form(GENERATION_DEFAULTS["depth_decoder_do_sample"], description="Depth decoder sampling"),
-    depth_decoder_temperature: float = Form(GENERATION_DEFAULTS["depth_decoder_temperature"], description="Depth decoder temperature"),
     turbo: bool = Form(True, description="Use turbo mode for faster generation"),
-    use_advanced_params: bool = Form(False, description="Use advanced generation parameters"),
+    enable_sentence_splitting: bool = Form(True, description="Enable smart sentence splitting for better prosody"),
+    max_chars: int = Form(200, description="Maximum characters per sentence when using sentence splitting"),
     output_format: str = Form("wav", description="Output format (wav)")
 ):
     """Genera audio extendido dividiendo el texto en segmentos para mayor duración"""
@@ -1468,38 +1391,29 @@ async def clone_voice_extended(
         
         logger.info(f"🎯 Extended generation: target={target_duration}s, estimated_tokens={estimated_tokens}")
         
-        # Intentar generar con parámetros avanzados primero
-        try:
-            # Generar audio usando tokens estimados
+        # Generar audio usando tokens estimados con división inteligente
+        if enable_sentence_splitting and len(text) > max_chars:
+            logger.info(f"🎵 Extended generation with sentence splitting (max {max_chars} chars per sentence)")
+            audio = manager.clone_voice_with_sentences(
+                text=text,
+                voice_id=voice_id,
+                sample_name=sample_name,
+                enable_sentence_splitting=enable_sentence_splitting,
+                max_chars=max_chars,
+                temperature=temperature,
+                max_tokens=estimated_tokens,
+                turbo=turbo
+            )
+        else:
+            logger.info("🎯 Extended generation with single-pass")
             audio = manager.clone_voice(
                 text=text,
                 voice_id=voice_id,
                 sample_name=sample_name,
                 temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                depth_decoder_do_sample=depth_decoder_do_sample,
-                depth_decoder_temperature=depth_decoder_temperature,
                 max_tokens=estimated_tokens,
-                turbo=turbo,
-                use_advanced_params=use_advanced_params
+                turbo=turbo
             )
-        except RuntimeError as e:
-            if "CUDA" in str(e) and "assert" in str(e) and use_advanced_params:
-                logger.warning(f"⚠️ Advanced parameters caused CUDA error, retrying with basic parameters only")
-                # Reintentar sin parámetros avanzados
-                audio = manager.clone_voice(
-                    text=text,
-                    voice_id=voice_id,
-                    sample_name=sample_name,
-                    temperature=temperature,
-                    max_tokens=estimated_tokens,
-                    turbo=turbo,
-                    use_advanced_params=False
-                )
-            else:
-                raise
         
         # Calcular duración real
         actual_duration = len(audio) / 24000
@@ -1536,13 +1450,7 @@ async def clone_voice_extended(
             headers={
                 "X-Audio-Duration": str(actual_duration),
                 "X-Target-Duration": str(target_duration),
-                "X-Tokens-Used": str(estimated_tokens),
-                "X-Generation-Params": json.dumps({
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                    "repetition_penalty": repetition_penalty
-                })
+                "X-Tokens-Used": str(estimated_tokens)
             }
         )
         
@@ -1551,6 +1459,101 @@ async def clone_voice_extended(
     except Exception as e:
         logger.error(f"❌ Extended voice cloning failed: {e}")
         raise HTTPException(status_code=500, detail=f"Extended voice cloning failed: {str(e)}")
+
+@app.post("/clone_with_prosody")
+async def clone_voice_with_prosody(
+    text: str = Form(..., description="Text to synthesize with enhanced prosody"),
+    voice_id: Optional[str] = Form(None, description="Voice collection ID"),
+    sample_name: Optional[str] = Form(None, description="Specific sample name (optional)"),
+    temperature: float = Form(GENERATION_DEFAULTS["temperature"], description="Sampling temperature"),
+    max_tokens: int = Form(GENERATION_DEFAULTS["max_tokens"], description="Maximum tokens to generate"),
+    turbo: bool = Form(True, description="Use turbo mode for faster generation"),
+    max_chars: int = Form(220, description="Maximum characters per sentence (50-300)"),
+    crossfade_duration: float = Form(0.05, description="Crossfade duration between segments in seconds"),
+    use_parallel_processing: bool = Form(True, description="Enable parallel chunk processing when beneficial"),
+    output_format: str = Form("wav", description="Output format (wav)")
+):
+    """
+    Endpoint especializado para clonación de voz con división inteligente en oraciones.
+    Optimizado para mejor prosodia con impacto mínimo en latencia.
+    """
+    try:
+        manager = get_voice_manager()
+        
+        # Validar voice_id si se proporciona
+        if voice_id and voice_id not in manager.voice_collections:
+            raise HTTPException(status_code=404, detail=f"Voice collection '{voice_id}' not found")
+        
+        # Validaciones específicas para prosody
+        if max_chars < 50:
+            raise HTTPException(status_code=400, detail="max_chars must be at least 50 characters")
+        if max_chars > 300:
+            raise HTTPException(status_code=400, detail="max_chars cannot exceed 300 characters")
+        
+        if len(text.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        
+        # Generar audio con configuraciones de prosodia
+        logger.info(f"🎭 Prosody-enhanced generation: {len(text)} chars, max_chars: {max_chars}")
+        
+        # Usar siempre división en oraciones para este endpoint
+        audio = manager.clone_voice_with_sentences(
+            text=text,
+            voice_id=voice_id,
+            sample_name=sample_name,
+            enable_sentence_splitting=True,
+            max_chars=max_chars,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            turbo=turbo
+        )
+        
+        # Crear nombre de archivo único
+        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        voice_suffix = f"_{voice_id}" if voice_id else "_default"
+        sample_suffix = f"_{sample_name}" if sample_name else ""
+        filename = f"prosody{voice_suffix}{sample_suffix}_{max_chars}ch_{text_hash}.{output_format}"
+        
+        output_path = Path("outputs") / filename
+        
+        # Guardar audio
+        if isinstance(audio, np.ndarray):
+            audio = audio.astype(np.float32)
+            audio_tensor = torch.from_numpy(audio)
+        else:
+            audio_tensor = audio.float()
+        
+        if len(audio_tensor.shape) == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+        
+        audio_numpy = audio_tensor.squeeze().numpy() if isinstance(audio_tensor, torch.Tensor) else audio_tensor
+        import soundfile as sf
+        sf.write(output_path, audio_numpy, 24000)
+        
+        # Calcular estadísticas
+        duration = len(audio_numpy) / 24000
+        estimated_sentences = len(text) // max_chars + (1 if len(text) % max_chars > 0 else 0)
+        
+        logger.info(f"✅ Prosody-enhanced audio generated: {output_path}")
+        logger.info(f"📊 Duration: {duration:.2f}s, Estimated sentences: {estimated_sentences}")
+        
+        return FileResponse(
+            path=output_path,
+            media_type="audio/wav",
+            filename=filename,
+            headers={
+                "X-Audio-Duration": str(duration),
+                "X-Sentence-Size": str(max_chars),
+                "X-Estimated-Sentences": str(estimated_sentences),
+                "X-Prosody-Enhanced": "true"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Prosody-enhanced voice cloning failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Prosody-enhanced voice cloning failed: {str(e)}")
 
 if __name__ == "__main__":
     logger.info("🎤 Voice Cloning API Complete - Starting...")
@@ -1583,10 +1586,6 @@ if __name__ == "__main__":
         
         logger.info("🚀 Starting server on http://0.0.0.0:7860")
         logger.info("📖 API Documentation: http://0.0.0.0:7860/docs")
-        logger.info("🎛️ Default generation parameters (conservative mode):")
-        for key, value in GENERATION_DEFAULTS.items():
-            logger.info(f"  • {key}: {value}")
-        logger.info("⚠️ Advanced parameters are DISABLED by default. Use 'use_advanced_params=true' to enable (experimental).")
         
         # Iniciar servidor
         uvicorn.run(
@@ -1600,4 +1599,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Failed to start server: {e}")
         traceback.print_exc()
-        sys.exit(1)
+        sys.exit(1) 
