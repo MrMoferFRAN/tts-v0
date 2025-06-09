@@ -53,7 +53,7 @@ except ImportError:
 
 # Generation defaults for CSM model
 GENERATION_DEFAULTS = {
-    "temperature": 0.8,     # creatividad moderada
+    "temperature": 0.7,     # creatividad moderada
     "max_tokens": 4096,     # ≈ 1 min de audio (24 kHz)
     "do_sample": True,      # sampling estocástico activado
     "output_audio": True    # el modelo debe devolver audio WAV
